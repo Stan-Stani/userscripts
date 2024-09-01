@@ -3,7 +3,7 @@
 // @namespace    https://www.seldoncortex.com/
 // @version      2024-07-24
 // @description  try to take over the world!
-// @author       You
+// @author       Stan Stanislaus
 // @match        http://localhost:3000/admin/*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
@@ -52,7 +52,7 @@
     function addTextToFirstInstanceOfTinyMCEFirst() {
         setTimeout(() => {
             const firstIframe = document.getElementsByTagName('iframe')[0]
-            firstIframe.contentDocument.body.innerText = 'Hello'
+            firstIframe.contentDocument.body.innerText = 'Yo Yo Yo Yo, Stan used his Tampermonkey userscript to auto fill this field and save him time! If you\'re interested in saving yourself time head over to https://github.com/Stan-Stani/userscripts/raw/main/steffesGroup/steffesGroup-RichTextEditorFill.user.js and grab the script for yourself. *Psst*, it helps if you have Tampermonkey installed: https://www.tampermonkey.net/'
             window.tinymce.triggerSave()
         }, 3000)
     }

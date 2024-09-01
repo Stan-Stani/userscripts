@@ -3,7 +3,7 @@
 // @namespace    https://www.seldoncortex.com/
 // @version      2024-03-14
 // @description  Keyboard shortcuts for Azure Devops PRs
-// @author       Stan-Stani
+// @author       Stan Stanislaus
 // @homepage     https://www.seldoncortex.com/
 // @match        **dev.azure**
 // @match        **visualstudio**

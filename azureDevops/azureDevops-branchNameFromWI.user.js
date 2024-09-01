@@ -3,7 +3,7 @@
 // @namespace    https://www.seldoncortex.com/
 // @version      2024-08-02
 // @description  Click on a card in a sprint board to copy its name in a git branch friendly format to the clipboard.
-// @author       You
+// @author       Stan Stanislaus
 // @match        https://*.visualstudio.com/Core%20API/_sprints/taskboard/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=visualstudio.com
 // @grant        none
