@@ -13,31 +13,70 @@
 // @grant        none
 // ==/UserScript==
 
-(function() {
-    'use strict';
-    const showOnlyActiveComments = (event) => {
-        if (event.key === 'ArrowRight' && event.ctrlKey && document.activeElement.nodeName !== "TEXTAREA" && document.activeElement.nodeName !== "INPUT") {
-        const nodeArr = Array.from(document.querySelectorAll('.bolt-button, .enabled, .bolt-focus-treatment')).filter((x) => x.innerText && x.innerText.includes('Show everything'))
-        nodeArr[0].click()
-        const nodeArrTwo = Array.from(document.querySelectorAll('#__bolt-active_comments')).filter((x) => x.innerText && x.innerText.includes('Active comments'))
-        nodeArrTwo[0].click()
-        console.log(nodeArrTwo)
-        }
+;(function () {
+  "use strict"
+  const showOnlyActiveComments = (event) => {
+    if (
+      event.key === "ArrowRight" &&
+      event.ctrlKey &&
+      document.activeElement.nodeName !== "TEXTAREA" &&
+      document.activeElement.nodeName !== "INPUT"
+    ) {
+      const nodeArr = Array.from(
+        document.querySelectorAll(
+          ".bolt-button, .enabled, .bolt-focus-treatment"
+        )
+      ).filter((x) => x.innerText && x.innerText.includes("Show everything"))
+      nodeArr[0].click()
+      const nodeArrTwo = Array.from(
+        document.querySelectorAll("#__bolt-active_comments")
+      ).filter((x) => x.innerText && x.innerText.includes("Active comments"))
+      nodeArrTwo[0].click()
     }
+  }
 
-     const showAllComments = (event) => {
-        if (event.key === 'ArrowLeft' && event.ctrlKey && document.activeElement.nodeName !== "TEXTAREA" && document.activeElement.nodeName !== "INPUT") {
-        const nodeArr = Array.from(document.querySelectorAll('.bolt-button, .enabled, .bolt-focus-treatment')).filter((x) => x.innerText && x.innerText.includes('Active comments'))
-        nodeArr[0].click()
+  const showAllComments = (event) => {
+    if (
+      event.key === "ArrowLeft" &&
+      event.ctrlKey &&
+      document.activeElement.nodeName !== "TEXTAREA" &&
+      document.activeElement.nodeName !== "INPUT"
+    ) {
+      const nodeArr = Array.from(
+        document.querySelectorAll(
+          ".bolt-button, .enabled, .bolt-focus-treatment"
+        )
+      ).filter((x) => x.innerText && x.innerText.includes("Active comments"))
+      nodeArr[0].click()
 
-        const nodeArrTwo = Array.from(document.querySelectorAll('#__bolt-everything')).filter((x) => x.innerText && x.innerText.includes('Show everything'))
-        console.log(nodeArrTwo)
-        nodeArrTwo[0].click()
-        console.log(nodeArrTwo)
-        }
+      const nodeArrTwo = Array.from(
+        document.querySelectorAll("#__bolt-everything")
+      ).filter((x) => x.innerText && x.innerText.includes("Show everything"))
+      nodeArrTwo[0].click()
     }
+  }
 
+  const copySourceBranchName = (event) => {
+    if (
+      event.key === "]" &&
+      event.metaKey &&
+      document.activeElement.nodeName !== "TEXTAREA" &&
+      document.activeElement.nodeName !== "INPUT"
+    ) {
+      const node = document.querySelector(
+        ".pr-header-branches > a:nth-child(1)"
+      )
 
-    document.addEventListener('keyup', showOnlyActiveComments, false);
-    document.addEventListener('keyup', showAllComments, false);
-    })();
+      if (node?.innerText) {
+        navigator.clipboard.writeText(node.innerText)
+        console.log("Wrote source branch to clipboard")
+      } else {
+        console.error("Failed to find source branch text to copy")
+      }
+    }
+  }
+
+  document.addEventListener("keyup", showOnlyActiveComments, false)
+  document.addEventListener("keyup", showAllComments, false)
+  document.addEventListener("keyup", copySourceBranchName, false)
+})()
