@@ -49,8 +49,33 @@
       opacity: 1 !important;
       color: #107c10;
     }
+    .ado-bn-toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #a4262c;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 4px;
+      font-size: 13px;
+      z-index: 2147483647;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      animation: ado-bn-fade-in 0.2s;
+    }
+    @keyframes ado-bn-fade-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
   `
   document.head.appendChild(style)
+
+  function showToast(message, duration = 5000) {
+    const toast = document.createElement("div")
+    toast.className = "ado-bn-toast"
+    toast.textContent = message
+    document.body.appendChild(toast)
+    setTimeout(() => toast.remove(), duration)
+  }
 
   const COPY_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
     <path d="M4 2h7a2 2 0 0 1 2 2v9h-1V4a1 1 0 0 0-1-1H4V2zm-2 3h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm0 1v8h8V6H2z"/>
@@ -61,11 +86,11 @@
   </svg>`
 
   const TYPE_PREFIXES = {
-    "Bug": "bug",
-    "Change Request": "cr",
-    "User Story": "feat",
-    "Feature": "feat",
-    "Task": "task",
+    "bug": "bug",
+    "change request": "cr",
+    "user story": "feat",
+    "feature": "feat",
+    "task": "task",
   }
 
   function toKebabCase(str) {
@@ -108,14 +133,20 @@
       .querySelectorAll(`.taskboard-card:not(.unparented-card):not([${PROCESSED_ATTR}])`)
       .forEach((card) => {
         card.setAttribute(PROCESSED_ATTR, "1")
-        const typeLabel = card.querySelector('[role="img"]')?.getAttribute("aria-label") ?? ""
-        const prefix = TYPE_PREFIXES[typeLabel] ?? "feat"
+        const typeLabel = (card.querySelector('[role="img"]')?.getAttribute("aria-label") ?? "").trim().toLowerCase()
+        const prefix = TYPE_PREFIXES[typeLabel]
         const id = card.querySelector(".font-weight-semibold.selectable-text")?.innerText?.trim()
         if (!id) return
         const titleLink = card.querySelector("a.title")
         if (!titleLink) return
         const title = toKebabCase(titleLink.innerText)
-        titleLink.parentElement.appendChild(makeCopyBtn(`${prefix}/${id}-${title}`))
+        titleLink.parentElement.appendChild(makeCopyBtn(() => {
+          if (!prefix) {
+            showToast(`Unknown work item type: "${typeLabel}"`)
+            throw new Error(`Unknown work item type: "${typeLabel}"`)
+          }
+          return `${prefix}/${id}-${title}`
+        }))
       })
   }
 
@@ -131,15 +162,21 @@
 
     titleContainer.setAttribute(PROCESSED_ATTR, "1")
 
-    const typeLabel = header.querySelector('[role="img"]')?.getAttribute("aria-label") ?? ""
-    const prefix = TYPE_PREFIXES[typeLabel] ?? "feat"
     const pathMatch = window.location.pathname.match(/_workitems\/edit\/(\d+)/)
     const queryMatch = new URLSearchParams(window.location.search).get("workitem")
     const id = pathMatch?.[1] ?? queryMatch
     if (!id) return
 
     titleContainer.appendChild(
-      makeCopyBtn(() => `${prefix}/${id}-${toKebabCase(titleInput.value)}`)
+      makeCopyBtn(() => {
+        const typeLabel = (header.querySelector('[role="img"]')?.getAttribute("aria-label") ?? "").trim().toLowerCase()
+        const prefix = TYPE_PREFIXES[typeLabel]
+        if (!prefix) {
+          showToast(`Unknown work item type: "${typeLabel}"`)
+          throw new Error(`Unknown work item type: "${typeLabel}"`)
+        }
+        return `${prefix}/${id}-${toKebabCase(titleInput.value)}`
+      })
     )
   }
 
