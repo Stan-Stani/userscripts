@@ -88,7 +88,7 @@
   const TYPE_PREFIXES = {
     "bug": "bug",
     "change request": "cr",
-    "user story": "feat",
+    "user story": "us",
     "feature": "feat",
     "task": "task",
   }
