@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-06-22.1
+// @version      2026-06-22.2
 // @description  All-in-one Azure DevOps helpers: PR file-path copy buttons, branch-name-from-work-item copy buttons, and PR keyboard shortcuts.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -704,15 +704,31 @@
 
   // ============================================================
   // Feature 3: PR Hotkeys
-  //   Ctrl + Right Arrow : Show only active (unresolved) comments
-  //   Ctrl + Left Arrow  : Show everything
-  //   Cmd/Win + ]        : Copy source branch name to clipboard
+  //   Win:  Ctrl + Right Arrow      Mac:  Ctrl + Opt + Right Arrow  : Show only active (unresolved) comments
+  //   Win:  Ctrl + Left Arrow       Mac:  Ctrl + Opt + Left Arrow   : Show everything
+  //   Win:  Win + ]                 Mac:  Cmd + Opt + ]             : Copy source branch name to clipboard
+  //
+  // Only the Mac bindings differ from the originals: plain Ctrl+Arrow is reserved
+  // by macOS Mission Control (switch spaces) and plain Cmd+] is Chrome's Forward
+  // nav. Windows keeps its original Ctrl+Arrow / Win+] bindings.
   // ============================================================
   function createHotkeys() {
+    const isMac = /Mac/i.test(navigator.platform) || /Mac/i.test(navigator.userAgent)
+
+    // Modifier check for the comment-view toggle (paired with Arrow keys).
+    const commentNavModifier = (event) =>
+      isMac ? event.ctrlKey && event.altKey : event.ctrlKey
+
+    // Modifier check for copy-source-branch (paired with the ] key).
+    // Windows keeps its original Win+] (metaKey); only Mac changes (Cmd+] would
+    // trigger Chrome's Forward nav, so it needs the extra Option).
+    const branchCopyModifier = (event) =>
+      isMac ? event.metaKey && event.altKey : event.metaKey
+
     const showOnlyActiveComments = (event) => {
       if (
         event.key === "ArrowRight" &&
-        event.ctrlKey &&
+        commentNavModifier(event) &&
         document.activeElement.nodeName !== "TEXTAREA" &&
         document.activeElement.nodeName !== "INPUT"
       ) {
@@ -732,7 +748,7 @@
     const showAllComments = (event) => {
       if (
         event.key === "ArrowLeft" &&
-        event.ctrlKey &&
+        commentNavModifier(event) &&
         document.activeElement.nodeName !== "TEXTAREA" &&
         document.activeElement.nodeName !== "INPUT"
       ) {
@@ -752,8 +768,8 @@
 
     const copySourceBranchName = (event) => {
       if (
-        event.key === "]" &&
-        event.metaKey &&
+        event.code === "BracketRight" &&
+        branchCopyModifier(event) &&
         document.activeElement.nodeName !== "TEXTAREA" &&
         document.activeElement.nodeName !== "INPUT"
       ) {
