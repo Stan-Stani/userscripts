@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-06-22
+// @version      2026-06-22.1
 // @description  All-in-one Azure DevOps helpers: PR file-path copy buttons, branch-name-from-work-item copy buttons, and PR keyboard shortcuts.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -92,10 +92,11 @@
 
     function updateBtnTitle(btn) {
       const fullPath = btn.dataset.fullPath
+      const suffix = btn.dataset.line ? `:${btn.dataset.line}` : ""
       const trimmed = trimPath(fullPath)
       btn.title = trimmed !== fullPath
-        ? `Copy: ${trimmed}\n(Shift+click for full path)\n(Right-click to manage prefixes)`
-        : `Copy: ${fullPath}\n(Right-click to add strip prefix)`
+        ? `Copy: ${trimmed}${suffix}\n(Shift+click for full path)\n(Right-click to manage prefixes)`
+        : `Copy: ${fullPath}${suffix}\n(Right-click to add strip prefix)`
     }
 
     // --- Popover ---
@@ -208,10 +209,11 @@
       input.select()
     }
 
-    function makeCopyBtn(fullPath) {
+    function makeCopyBtn(fullPath, line = "") {
       const btn = document.createElement("button")
       btn.className = "ado-fp-copy-btn"
       btn.dataset.fullPath = fullPath
+      if (line) btn.dataset.line = line
       updateBtnTitle(btn)
       btn.innerHTML = COPY_ICON
 
@@ -219,7 +221,11 @@
         e.preventDefault()
         e.stopPropagation()
         if (activePopover) { closePopover(); return }
-        const pathToCopy = e.shiftKey ? fullPath : trimPath(fullPath)
+        const base = e.shiftKey ? fullPath : trimPath(fullPath)
+        // Read the line at click time: for comment headers it's patched on
+        // asynchronously once the PR threads API responds (see loadThreadLines).
+        const ln = btn.dataset.line
+        const pathToCopy = ln ? `${base}:${ln}` : base
         navigator.clipboard.writeText(pathToCopy).then(() => {
           btn.classList.add("ado-fp-copied")
           btn.innerHTML = CHECK_ICON
@@ -239,6 +245,81 @@
       return btn
     }
 
+    // --- Overview tab: anchored line numbers via the PR threads API ---
+    //
+    // Each comment header link carries a discussionId (the thread id) but NOT the
+    // anchored line: the line only exists in the diff-snippet preview, which ADO
+    // lazy-loads when the thread is scrolled into view. So we can't read it from
+    // the DOM when the button is created. Instead we fetch the PR threads once
+    // (same-origin, with the user's session) and map discussionId -> line, then
+    // patch the line onto each button as soon as the response arrives.
+    const lineByDiscussion = new Map()
+    let loadedPrId = null
+    let loadingPrId = null
+
+    function currentPrInfo() {
+      // Works for both dev.azure.com/{org}/{project}/_git/... and legacy
+      // {account}.visualstudio.com/[{collection}/]{project}/_git/... — the API
+      // path lives under the same prefix that precedes "/_git/".
+      const path = location.pathname
+      const idx = path.indexOf("/_git/")
+      if (idx === -1) return null
+      const prefix = path.slice(0, idx)
+      const rest = path.slice(idx + "/_git/".length)
+      const repo = rest.split("/")[0]
+      const m = rest.match(/pullrequest\/(\d+)/i)
+      if (!repo || !m) return null
+      return { prefix, repo, prId: m[1] }
+    }
+
+    function applyLinesToButtons() {
+      document
+        .querySelectorAll(".ado-fp-copy-btn[data-discussion-id]")
+        .forEach((btn) => {
+          if (btn.dataset.line) return
+          const line = lineByDiscussion.get(btn.dataset.discussionId)
+          if (line) {
+            btn.dataset.line = String(line)
+            updateBtnTitle(btn)
+          }
+        })
+    }
+
+    function loadThreadLines() {
+      const info = currentPrInfo()
+      if (!info) return
+      if (loadedPrId === info.prId || loadingPrId === info.prId) return
+      // New PR (e.g. SPA navigation): drop the previous PR's lines.
+      lineByDiscussion.clear()
+      loadedPrId = null
+      loadingPrId = info.prId
+
+      const api =
+        `${location.origin}${info.prefix}/_apis/git/repositories/` +
+        `${info.repo}/pullRequests/${info.prId}/threads?api-version=7.1-preview.1`
+
+      fetch(api, { credentials: "include", headers: { Accept: "application/json" } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!data || !data.value) return
+          for (const t of data.value) {
+            const ctx = t.threadContext
+            if (!ctx) continue
+            const line =
+              (ctx.rightFileStart && ctx.rightFileStart.line) ||
+              (ctx.leftFileStart && ctx.leftFileStart.line) ||
+              null
+            if (line) lineByDiscussion.set(String(t.id), line)
+          }
+          loadedPrId = info.prId
+          applyLinesToButtons()
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (loadingPrId === info.prId) loadingPrId = null
+        })
+    }
+
     // --- Overview tab: comment thread file headers ---
     function processCommentFileHeaders() {
       document
@@ -249,17 +330,20 @@
           const link = titleRow.querySelector("a.comment-file-header-link")
           if (!link) return
 
+          // The header link looks like ...?path=/src/foo.ts&discussionId=42 —
+          // the path is here, but the anchored line is not (it's fetched async
+          // by discussionId, see loadThreadLines above).
+          let params = null
+          try { params = new URL(link.href, location.origin).searchParams } catch {}
+
           const pathSpan = link.nextElementSibling
           let fullPath =
             pathSpan && pathSpan.textContent.trim().startsWith("/")
               ? pathSpan.textContent.trim()
               : ""
 
-          if (!fullPath) {
-            try {
-              const url = new URL(link.href, location.origin)
-              fullPath = decodeURIComponent(url.searchParams.get("path") || "")
-            } catch {}
+          if (!fullPath && params) {
+            fullPath = decodeURIComponent(params.get("path") || "")
           }
 
           if (!fullPath) return
@@ -267,8 +351,15 @@
           link.title = fullPath
           if (pathSpan) pathSpan.title = fullPath
 
-          const btn = makeCopyBtn(fullPath)
+          const discussionId = params && params.get("discussionId")
+          const known = discussionId ? lineByDiscussion.get(discussionId) : ""
+
+          const btn = makeCopyBtn(fullPath, known ? String(known) : "")
           btn.style.alignSelf = "center"
+          if (discussionId) {
+            btn.dataset.discussionId = discussionId
+            loadThreadLines() // self-guards; fetch runs at most once per PR
+          }
           titleRow.insertBefore(btn, titleRow.lastElementChild)
         })
     }
