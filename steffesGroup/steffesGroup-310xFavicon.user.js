@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         steffesGroup310xFavicon
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-04.1
+// @version      2026-08-04.2
 // @description  Swap the favicon on localhost 310X dev instances so they don't look like default Steffes tabs
 // @author       Stan Stanislaus
 // @match        *://localhost/*
@@ -57,39 +57,56 @@
 
   const dataUrl = buildFaviconDataUrl()
   const MARKER = "data-favicon-310x"
-  let applying = false
+
+  function ourLink() {
+    return document.head.querySelector(`link[${MARKER}]`)
+  }
+
+  function iconLinks() {
+    return [...document.head.querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"]')]
+  }
+
+  function needsWork() {
+    const ours = ourLink()
+    if (!ours || ours.href !== dataUrl) return true
+    const links = iconLinks()
+    // Ours must be last so the browser prefers it over the app's icons.
+    if (links[links.length - 1] !== ours) return true
+    return links.some((el) => el !== ours && el.href !== dataUrl)
+  }
 
   function applyFavicon() {
-    applying = true
-    try {
-      document
-        .querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]')
-        .forEach((el) => el.remove())
-
-      const link = document.createElement("link")
-      link.rel = "icon"
-      link.type = "image/png"
-      link.href = dataUrl
-      link.setAttribute(MARKER, "true")
-      document.head.appendChild(link)
-    } finally {
-      applying = false
+    // Never remove framework-owned <link> elements — React 19 keeps refs to
+    // its hoisted head tags and crashes unmounting one that's already been
+    // detached. Repoint their href instead.
+    for (const el of iconLinks()) {
+      if (!el.hasAttribute(MARKER) && el.href !== dataUrl) el.href = dataUrl
     }
+    let ours = ourLink()
+    if (!ours) {
+      ours = document.createElement("link")
+      ours.rel = "icon"
+      ours.type = "image/png"
+      ours.href = dataUrl
+      ours.setAttribute(MARKER, "true")
+    }
+    document.head.appendChild(ours)
   }
 
   function ensureFavicon() {
-    if (applying || !document.head) return
-    const current = document.head.querySelector(`link[${MARKER}]`)
-    const strays = document.head.querySelectorAll(
-      `link[rel~="icon"]:not([${MARKER}]), link[rel="shortcut icon"]:not([${MARKER}])`
-    )
-    if (!current || strays.length) applyFavicon()
+    // Idempotent: once the head is in the desired state this no-ops, so the
+    // observer seeing our own mutations can't loop.
+    if (document.head && needsWork()) applyFavicon()
   }
 
   function start() {
     ensureFavicon()
-    // SPAs and dev servers love re-injecting their own favicon; win the fight.
-    new MutationObserver(ensureFavicon).observe(document.head, { childList: true })
+    new MutationObserver(ensureFavicon).observe(document.head, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["href"],
+    })
   }
 
   if (document.head) {
