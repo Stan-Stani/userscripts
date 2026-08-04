@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         steffesGroup310xFavicon
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-04
+// @version      2026-08-04.1
 // @description  Swap the favicon on localhost 310X dev instances so they don't look like default Steffes tabs
 // @author       Stan Stanislaus
 // @match        *://localhost/*
@@ -56,25 +56,32 @@
   }
 
   const dataUrl = buildFaviconDataUrl()
+  const MARKER = "data-favicon-310x"
+  let applying = false
 
   function applyFavicon() {
-    document
-      .querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]')
-      .forEach((el) => el.remove())
+    applying = true
+    try {
+      document
+        .querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]')
+        .forEach((el) => el.remove())
 
-    const link = document.createElement("link")
-    link.rel = "icon"
-    link.type = "image/png"
-    link.href = dataUrl
-    link.dataset.favicon310x = "true"
-    document.head.appendChild(link)
+      const link = document.createElement("link")
+      link.rel = "icon"
+      link.type = "image/png"
+      link.href = dataUrl
+      link.setAttribute(MARKER, "true")
+      document.head.appendChild(link)
+    } finally {
+      applying = false
+    }
   }
 
   function ensureFavicon() {
-    if (!document.head) return
-    const current = document.head.querySelector('link[data-favicon-310x="true"]')
+    if (applying || !document.head) return
+    const current = document.head.querySelector(`link[${MARKER}]`)
     const strays = document.head.querySelectorAll(
-      'link[rel~="icon"]:not([data-favicon-310x]), link[rel="shortcut icon"]:not([data-favicon-310x])'
+      `link[rel~="icon"]:not([${MARKER}]), link[rel="shortcut icon"]:not([${MARKER}])`
     )
     if (!current || strays.length) applyFavicon()
   }
