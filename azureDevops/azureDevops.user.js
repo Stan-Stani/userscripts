@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-14.1
+// @version      2026-08-14.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, and PR keyboard shortcuts.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -863,10 +863,12 @@
 
     function updateButton(button, settings) {
       const activeCount = FILTERS.filter(({ key }) => settings[key]).length
-      button.textContent = activeCount ? `Filter PRs (${activeCount})` : "Filter PRs"
-      button.title = activeCount
+      const text = activeCount ? `Filter PRs (${activeCount})` : "Filter PRs"
+      const title = activeCount
         ? `${activeCount} pull request filter${activeCount === 1 ? "" : "s"} active`
         : "Filter pull requests"
+      if (button.textContent !== text) button.textContent = text
+      if (button.title !== title) button.title = title
     }
 
     function applyFilters() {
