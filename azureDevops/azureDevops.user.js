@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-14.2
+// @version      2026-08-14.3
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, and PR keyboard shortcuts.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -805,6 +805,8 @@
   function createPrDashboardFilters() {
     const SETTINGS_KEY = "ado-pr-dashboard-filters"
     const CONTROL_ID = "ado-pr-filter-control"
+    const RULES_ID = "ado-pr-filter-rules"
+    let processScheduled = false
     const FILTERS = [
       { key: "draft", label: "Drafts", selector: ".repos-pr-list-draft-pill" },
       { key: "autoComplete", label: "Auto-complete", selector: ".repos-pr-list-auto-complete-pill" },
@@ -817,7 +819,6 @@
     }
 
     const STYLES = `
-      .ado-pr-filter-hidden { display: none !important; }
       .ado-pr-filter-control { position: relative; }
       .ado-pr-filter-button { white-space: nowrap; }
       .ado-pr-filter-menu {
@@ -873,12 +874,19 @@
 
     function applyFilters() {
       const settings = getSettings()
-      document.querySelectorAll('.repos-pr-list [role="row"]').forEach((row) => {
-        const shouldHide = FILTERS.some(
-          ({ key, selector }) => settings[key] && row.querySelector(selector)
-        )
-        row.classList.toggle("ado-pr-filter-hidden", shouldHide)
-      })
+      let rules = document.getElementById(RULES_ID)
+      if (!rules) {
+        rules = document.createElement("style")
+        rules.id = RULES_ID
+        document.head.appendChild(rules)
+      }
+      const selectors = FILTERS
+        .filter(({ key }) => settings[key])
+        .map(({ selector }) => `.repos-pr-list [role="row"]:has(${selector})`)
+      const css = selectors.length
+        ? `${selectors.join(",\n")} { display: none !important; }`
+        : ""
+      if (rules.textContent !== css) rules.textContent = css
 
       const button = document.querySelector(`#${CONTROL_ID} .ado-pr-filter-button`)
       if (button) updateButton(button, settings)
@@ -892,10 +900,11 @@
     }
 
     function createControl() {
+      if (document.getElementById(CONTROL_ID)) return
       const commandBar = document.querySelector(
         ".hostname-header .bolt-header-commandbar"
       )
-      if (!commandBar || document.getElementById(CONTROL_ID)) return
+      if (!commandBar) return
 
       const settings = getSettings()
       const control = document.createElement("div")
@@ -949,14 +958,21 @@
       commandBar.prepend(control)
     }
 
+    function scheduleProcess() {
+      if (processScheduled) return
+      processScheduled = true
+      requestAnimationFrame(() => {
+        processScheduled = false
+        createControl()
+        applyFilters()
+      })
+    }
+
     return {
       name: "PR Dashboard Filters",
       match: (url) => new URL(url).pathname.endsWith("/_pulls"),
       init() { injectStyle(STYLES) },
-      process() {
-        createControl()
-        applyFilters()
-      },
+      process: scheduleProcess,
     }
   }
 
