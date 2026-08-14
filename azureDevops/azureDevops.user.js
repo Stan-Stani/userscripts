@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-06-22.2
-// @description  All-in-one Azure DevOps helpers: PR file-path copy buttons, branch-name-from-work-item copy buttons, and PR keyboard shortcuts.
+// @version      2026-08-14.1
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, and PR keyboard shortcuts.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -21,6 +21,7 @@
  *   1. PR File Path Tools  — copy buttons + hover full-path on PR file headers
  *   2. Branch Name Tools   — copy "bug/14826-title" branch names from cards / work items
  *   3. PR Hotkeys          — keyboard shortcuts for PR comment views + branch copy
+ *   4. PR Dashboard Filters — hide drafts, auto-complete PRs, and conflicts
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -798,12 +799,173 @@
   }
 
   // ============================================================
+  // Feature 4: PR Dashboard Filters
+  // Hides PR rows carrying selected Azure DevOps status pills on My pull requests.
+  // ============================================================
+  function createPrDashboardFilters() {
+    const SETTINGS_KEY = "ado-pr-dashboard-filters"
+    const CONTROL_ID = "ado-pr-filter-control"
+    const FILTERS = [
+      { key: "draft", label: "Drafts", selector: ".repos-pr-list-draft-pill" },
+      { key: "autoComplete", label: "Auto-complete", selector: ".repos-pr-list-auto-complete-pill" },
+      { key: "conflicts", label: "Conflicts", selector: ".repos-pr-list-conflicts-pill" },
+    ]
+    const DEFAULT_SETTINGS = {
+      draft: true,
+      autoComplete: false,
+      conflicts: false,
+    }
+
+    const STYLES = `
+      .ado-pr-filter-hidden { display: none !important; }
+      .ado-pr-filter-control { position: relative; }
+      .ado-pr-filter-button { white-space: nowrap; }
+      .ado-pr-filter-menu {
+        position: absolute;
+        z-index: 1000;
+        top: calc(100% + 4px);
+        right: 0;
+        min-width: 190px;
+        padding: 8px 0;
+        background: var(--background-color, #fff);
+        border: 1px solid rgba(0, 0, 0, 0.2);
+        border-radius: 2px;
+        box-shadow: 0 3px 14px rgba(0, 0, 0, 0.2);
+      }
+      .ado-pr-filter-menu[hidden] { display: none; }
+      .ado-pr-filter-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 32px;
+        padding: 0 12px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .ado-pr-filter-option:hover { background: rgba(0, 0, 0, 0.06); }
+      .ado-pr-filter-option input { margin: 0; }
+    `
+
+    function getSettings() {
+      try {
+        return {
+          ...DEFAULT_SETTINGS,
+          ...JSON.parse(localStorage.getItem(SETTINGS_KEY)),
+        }
+      } catch {
+        return { ...DEFAULT_SETTINGS }
+      }
+    }
+
+    function saveSettings(settings) {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+    }
+
+    function updateButton(button, settings) {
+      const activeCount = FILTERS.filter(({ key }) => settings[key]).length
+      button.textContent = activeCount ? `Filter PRs (${activeCount})` : "Filter PRs"
+      button.title = activeCount
+        ? `${activeCount} pull request filter${activeCount === 1 ? "" : "s"} active`
+        : "Filter pull requests"
+    }
+
+    function applyFilters() {
+      const settings = getSettings()
+      document.querySelectorAll('.repos-pr-list [role="row"]').forEach((row) => {
+        const shouldHide = FILTERS.some(
+          ({ key, selector }) => settings[key] && row.querySelector(selector)
+        )
+        row.classList.toggle("ado-pr-filter-hidden", shouldHide)
+      })
+
+      const button = document.querySelector(`#${CONTROL_ID} .ado-pr-filter-button`)
+      if (button) updateButton(button, settings)
+    }
+
+    function closeMenu(control) {
+      const button = control.querySelector(".ado-pr-filter-button")
+      const menu = control.querySelector(".ado-pr-filter-menu")
+      menu.hidden = true
+      button.setAttribute("aria-expanded", "false")
+    }
+
+    function createControl() {
+      const commandBar = document.querySelector(
+        ".hostname-header .bolt-header-commandbar"
+      )
+      if (!commandBar || document.getElementById(CONTROL_ID)) return
+
+      const settings = getSettings()
+      const control = document.createElement("div")
+      control.id = CONTROL_ID
+      control.className = "ado-pr-filter-control"
+      control.innerHTML = `
+        <button class="ado-pr-filter-button bolt-header-command-item-button bolt-button enabled bolt-focus-treatment"
+                type="button" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+          Filter PRs
+        </button>
+        <div class="ado-pr-filter-menu" role="menu" hidden>
+          ${FILTERS.map(({ key, label }) => `
+            <label class="ado-pr-filter-option" role="menuitemcheckbox">
+              <input type="checkbox" data-filter-key="${key}" ${settings[key] ? "checked" : ""} />
+              <span>Hide ${label}</span>
+            </label>
+          `).join("")}
+        </div>
+      `
+
+      const button = control.querySelector(".ado-pr-filter-button")
+      const menu = control.querySelector(".ado-pr-filter-menu")
+      updateButton(button, settings)
+
+      button.addEventListener("click", (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        menu.hidden = !menu.hidden
+        button.setAttribute("aria-expanded", String(!menu.hidden))
+      })
+
+      control.querySelectorAll("input[data-filter-key]").forEach((input) => {
+        input.addEventListener("change", () => {
+          const nextSettings = getSettings()
+          nextSettings[input.dataset.filterKey] = input.checked
+          saveSettings(nextSettings)
+          applyFilters()
+        })
+      })
+
+      document.addEventListener("click", (event) => {
+        if (!control.contains(event.target)) closeMenu(control)
+      })
+      control.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeMenu(control)
+          button.focus()
+        }
+      })
+
+      commandBar.prepend(control)
+    }
+
+    return {
+      name: "PR Dashboard Filters",
+      match: (url) => new URL(url).pathname.endsWith("/_pulls"),
+      init() { injectStyle(STYLES) },
+      process() {
+        createControl()
+        applyFilters()
+      },
+    }
+  }
+
+  // ============================================================
   // Controller
   // ============================================================
   const FEATURES = [
     createFilePathTools(),
     createBranchNameTools(),
     createHotkeys(),
+    createPrDashboardFilters(),
   ]
 
   function runFeature(f) {

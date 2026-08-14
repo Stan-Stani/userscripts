@@ -4,7 +4,7 @@ A single userscript for the whole team that adds quality-of-life helpers to
 Azure DevOps pull requests and work items. Install once; it auto-updates from
 this repo.
 
-It bundles three features, each isolated so a failure in one can't break the
+It bundles four features, each isolated so a failure in one can't break the
 others.
 
 > The screenshots below use placeholder data — paths, work items, and branch
@@ -77,6 +77,19 @@ work item type:
 The macOS bindings differ on purpose: plain `Ctrl` + arrow is reserved by
 Mission Control (switch spaces), and plain `Cmd` + `]` is the browser's Forward
 navigation — so the Mac shortcuts add `Opt` to avoid both.
+
+---
+
+## 4. PR Dashboard Filters
+
+Adds a **Filter PRs** menu to **My pull requests**. It can independently hide:
+
+- Drafts
+- Auto-complete pull requests
+- Pull requests with conflicts
+
+Drafts are hidden by default. Filter choices are stored per Azure DevOps origin
+in `localStorage` and continue to apply as the dashboard updates.
 
 ---
 
