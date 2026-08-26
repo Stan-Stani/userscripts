@@ -3,7 +3,7 @@
 ## Azure DevOps Toolbox — `azureDevops/azureDevops.user.js`
 
 One script for the whole team. Install it once in Tampermonkey/Violentmonkey and
-it auto-updates from this repo. It bundles four features, each isolated so a
+it auto-updates from this repo. It bundles five features, each isolated so a
 failure in one can't break the others:
 
 1. **PR File Path Tools** — copy buttons + full-path tooltips on PR file headers,
@@ -14,6 +14,9 @@ failure in one can't break the others:
    source branch (Windows + macOS bindings).
 4. **PR Dashboard Filters** — hide drafts, auto-complete PRs, and PRs with
    conflicts from My pull requests.
+5. **Open PR in VS Code** — button beside the source branch (or Alt+click the
+   branch name) that opens the PR in the AzDO Pull Requests (Multi-Project) VS
+   Code extension.
 
 ![Copy button on a PR file header](azureDevops/docs/file-path-copy.png)
 

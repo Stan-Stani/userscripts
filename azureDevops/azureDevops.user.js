@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-14.3
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, and PR keyboard shortcuts.
+// @version      2026-08-26.1
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR keyboard shortcuts, and open-PR-in-VS-Code.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -22,6 +22,7 @@
  *   2. Branch Name Tools   — copy "bug/14826-title" branch names from cards / work items
  *   3. PR Hotkeys          — keyboard shortcuts for PR comment views + branch copy
  *   4. PR Dashboard Filters — hide drafts, auto-complete PRs, and conflicts
+ *   5. Open PR in VS Code  — hand the PR to the AzDO Pull Requests (Multi-Project) VS Code extension
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -47,6 +48,22 @@
     const style = document.createElement("style")
     style.textContent = css
     document.head.appendChild(style)
+  }
+
+  // Identify the PR the current page belongs to. Works for both
+  // dev.azure.com/{org}/{project}/_git/... and legacy
+  // {account}.visualstudio.com/[{collection}/]{project}/_git/... — REST API and
+  // PR page paths both live under the prefix that precedes "/_git/".
+  function currentPrInfo() {
+    const path = location.pathname
+    const idx = path.indexOf("/_git/")
+    if (idx === -1) return null
+    const prefix = path.slice(0, idx)
+    const rest = path.slice(idx + "/_git/".length)
+    const repo = rest.split("/")[0]
+    const m = rest.match(/pullrequest\/(\d+)/i)
+    if (!repo || !m) return null
+    return { prefix, repo, prId: m[1] }
   }
 
   // ============================================================
@@ -257,21 +274,6 @@
     const lineByDiscussion = new Map()
     let loadedPrId = null
     let loadingPrId = null
-
-    function currentPrInfo() {
-      // Works for both dev.azure.com/{org}/{project}/_git/... and legacy
-      // {account}.visualstudio.com/[{collection}/]{project}/_git/... — the API
-      // path lives under the same prefix that precedes "/_git/".
-      const path = location.pathname
-      const idx = path.indexOf("/_git/")
-      if (idx === -1) return null
-      const prefix = path.slice(0, idx)
-      const rest = path.slice(idx + "/_git/".length)
-      const repo = rest.split("/")[0]
-      const m = rest.match(/pullrequest\/(\d+)/i)
-      if (!repo || !m) return null
-      return { prefix, repo, prId: m[1] }
-    }
 
     function applyLinesToButtons() {
       document
@@ -977,6 +979,146 @@
   }
 
   // ============================================================
+  // Feature 5: Open PR in VS Code
+  // Adds an "Open in VS Code" button beside the source branch in the PR header;
+  // Alt/Option+click on the branch name does the same. Both hand the PR to the
+  // "AzDO Pull Requests (Multi-Project)" extension
+  // (zacharychristmas.azdo-pull-requests-multiproject, Marketplace) through its
+  // vscode:// deep link, which locates the workspace folder that clones the repo
+  // and opens the PR description page (Checkout lives on that page).
+  //
+  // Deep link contract (extension >= 1.6.0):
+  //   vscode://zacharychristmas.azdo-pull-requests-multiproject/open-pr
+  //     ?org=<orgUrl>&project=<project>&repo=<repo>&pr=<id>[&path=<file>&line=<n>]
+  //   — every value encodeURIComponent'd; the extension matches repo/project
+  //   case-insensitively and falls back to an "Open on the web" prompt when the
+  //   repo isn't open in the focused VS Code window.
+  //
+  // The URI scheme defaults to "vscode"; set localStorage
+  // "ado-vscode-uri-scheme" to e.g. "vscode-insiders" to target another build.
+  // ============================================================
+  function createOpenInVsCode() {
+    const PROCESSED_ATTR = "data-vsc-processed"
+    const SCHEME_KEY = "ado-vscode-uri-scheme"
+    const EXTENSION_ID = "zacharychristmas.azdo-pull-requests-multiproject"
+
+    const VSCODE_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z"/>
+    </svg>`
+
+    const STYLES = `
+      .ado-vsc-open-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 2px 5px;
+        margin: 0 2px;
+        border-radius: 3px;
+        opacity: 0.55;
+        color: inherit;
+        flex-shrink: 0;
+        transition: opacity 0.15s, background 0.15s;
+        vertical-align: middle;
+      }
+      .ado-vsc-open-btn:hover {
+        opacity: 1;
+        background: rgba(0,0,0,0.08);
+      }
+      .ado-vsc-open-btn.ado-vsc-sent {
+        opacity: 1;
+        color: #107c10;
+      }
+    `
+
+    function uriScheme() {
+      return localStorage.getItem(SCHEME_KEY) || "vscode"
+    }
+
+    // Org URL + project name from the page URL, for both hosting styles:
+    //   https://dev.azure.com/{org}/{project}/_git/...            -> https://dev.azure.com/{org}
+    //   https://{org}.visualstudio.com/[{collection}/]{project}/_git/... -> https://{org}.visualstudio.com
+    function currentOrgAndProject(prefix) {
+      const segments = prefix.split("/").filter(Boolean).map(decodeURIComponent)
+      if (!segments.length) return null
+      const project = segments[segments.length - 1]
+      const orgUrl = location.hostname.toLowerCase() === "dev.azure.com"
+        ? `${location.origin}/${encodeURIComponent(segments[0])}`
+        : location.origin
+      return { orgUrl, project }
+    }
+
+    function buildDeepLink() {
+      const info = currentPrInfo()
+      if (!info) return null
+      const org = currentOrgAndProject(info.prefix)
+      if (!org) return null
+      const query =
+        `org=${encodeURIComponent(org.orgUrl)}` +
+        `&project=${encodeURIComponent(org.project)}` +
+        `&repo=${encodeURIComponent(decodeURIComponent(info.repo))}` +
+        `&pr=${info.prId}`
+      return `${uriScheme()}://${EXTENSION_ID}/open-pr?${query}`
+    }
+
+    function openInVsCode(btn) {
+      const uri = buildDeepLink()
+      if (!uri) {
+        console.error("[ADO Toolbox] Could not determine the pull request from the URL")
+        return
+      }
+      // Navigating to a custom scheme hands off to the OS; the page stays put.
+      location.href = uri
+      if (btn) {
+        btn.classList.add("ado-vsc-sent")
+        btn.innerHTML = CHECK_ICON
+        setTimeout(() => {
+          btn.classList.remove("ado-vsc-sent")
+          btn.innerHTML = VSCODE_ICON
+        }, 1500)
+      }
+    }
+
+    function processPrHeader() {
+      const branches = document.querySelector(`.pr-header-branches:not([${PROCESSED_ATTR}])`)
+      if (!branches) return
+      const sourceLink = branches.querySelector("a")
+      if (!sourceLink) return
+      branches.setAttribute(PROCESSED_ATTR, "1")
+
+      const btn = document.createElement("button")
+      btn.className = "ado-vsc-open-btn"
+      btn.type = "button"
+      btn.title = "Open this pull request in VS Code\n(Alt+click the branch name does the same)"
+      btn.innerHTML = VSCODE_ICON
+      btn.addEventListener("click", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        openInVsCode(btn)
+      })
+      sourceLink.insertAdjacentElement("afterend", btn)
+
+      // Alt/Option+click on the branch name itself. Plain click keeps ADO's
+      // navigation to the branch page.
+      sourceLink.addEventListener("click", (e) => {
+        if (!e.altKey) return
+        e.preventDefault()
+        e.stopPropagation()
+        openInVsCode(btn)
+      })
+    }
+
+    return {
+      name: "Open PR in VS Code",
+      match: (url) => url.includes("/pullrequest/"),
+      init() { injectStyle(STYLES) },
+      process: processPrHeader,
+    }
+  }
+
+  // ============================================================
   // Controller
   // ============================================================
   const FEATURES = [
@@ -984,6 +1126,7 @@
     createBranchNameTools(),
     createHotkeys(),
     createPrDashboardFilters(),
+    createOpenInVsCode(),
   ]
 
   function runFeature(f) {
