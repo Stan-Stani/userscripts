@@ -1098,7 +1098,12 @@
         e.stopPropagation()
         openInVsCode(btn)
       })
-      sourceLink.insertAdjacentElement("afterend", btn)
+      // Land after ADO's own copy-branch-name button (a sibling <button> in
+      // this container) rather than jumping ahead of it; fall back to right
+      // after the branch link if no such button is present.
+      const builtInCopyBtn = branches.querySelector("button")
+      const anchor = builtInCopyBtn || sourceLink
+      anchor.insertAdjacentElement("afterend", btn)
 
       // Alt/Option+click on the branch name itself. Plain click keeps ADO's
       // navigation to the branch page.
