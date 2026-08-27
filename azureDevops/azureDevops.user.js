@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-27.1
+// @version      2026-08-27.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR keyboard shortcuts, and open-PR-in-VS-Code.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1098,11 +1098,21 @@
         e.stopPropagation()
         openInVsCode(btn)
       })
-      // Land after ADO's own copy-branch-name button (a sibling <button> in
-      // this container) rather than jumping ahead of it; fall back to right
-      // after the branch link if no such button is present.
+      // Land after ADO's own copy-branch-name button rather than jumping
+      // ahead of it. That button is wrapped in a container div
+      // (.bolt-clipboard-button) sized for exactly one icon button, so we
+      // anchor on that wrapper -- the actual direct child of `branches` --
+      // rather than the <button> itself, which would drop ours inside the
+      // wrapper alongside it.
       const builtInCopyBtn = branches.querySelector("button")
-      const anchor = builtInCopyBtn || sourceLink
+      let anchor = sourceLink
+      if (builtInCopyBtn) {
+        let el = builtInCopyBtn
+        while (el.parentElement && el.parentElement !== branches) {
+          el = el.parentElement
+        }
+        anchor = el
+      }
       anchor.insertAdjacentElement("afterend", btn)
 
       // Alt/Option+click on the branch name itself. Plain click keeps ADO's
