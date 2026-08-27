@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-26.1
+// @version      2026-08-27.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR keyboard shortcuts, and open-PR-in-VS-Code.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
