@@ -4,7 +4,7 @@ A single userscript for the whole team that adds quality-of-life helpers to
 Azure DevOps pull requests and work items. Install once; it auto-updates from
 this repo.
 
-It bundles five features, each isolated so a failure in one can't break the
+It bundles eight features, each isolated so a failure in one can't break the
 others.
 
 > The screenshots below use placeholder data — paths, work items, and branch
@@ -160,3 +160,41 @@ refresh when the modal closes; reload the PR to see updated titles or states.
 > (`azureDevopsPRs-filePath`, `azureDevopsPRs-hotkeys`,
 > `azureDevops-branchNameFromWI`). Uninstall those from your userscript manager
 > first to avoid duplicate buttons.
+
+---
+
+## 8. Work on in Claude (opt-in)
+
+Adds a `>_` button beside the work item title that hands the item to a launcher
+on **your own machine** — for example a terminal that starts a Claude Code
+session with the work item's context already loaded.
+
+It is off by default. Enable it per browser by storing a URL template from the
+devtools console:
+
+```js
+localStorage.setItem("ado-claude-launch-url", "hammerspoon://cc-wi?id={id}")
+```
+
+`{id}` is replaced with the work item id and the button navigates to the
+result, so your OS opens whatever handles that scheme (the browser asks once
+whether to allow it — tick "remember"). Remove the key to hide the button again.
+
+Reference setup on macOS with [Hammerspoon](https://www.hammerspoon.org/) and
+iTerm2, where `cc-wi <id>` is a local script that fetches the work item and
+starts Claude Code on it:
+
+```lua
+-- ~/.hammerspoon/init.lua
+hs.urlevent.bind("cc-wi", function(_, params)
+  local id = params and params.id or ""
+  if not id:match("^%d+$") then return end   -- the id is all that reaches the shell
+  hs.osascript.applescript(string.format([[
+    tell application "iTerm"
+      activate
+      set w to (create window with default profile)
+      tell current session of w to write text "cc-wi %s"
+    end tell
+  ]], id))
+end)
+```

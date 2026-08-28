@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-28.2
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, and a work item modal on PR pages.
+// @version      2026-08-28.3
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and an opt-in work-on-in-Claude launcher button.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -25,6 +25,7 @@
  *   5. Open PR in VS Code  — hand the PR to the AzDO Pull Requests (Multi-Project) VS Code extension
  *   6. Work Item Hotkeys   — Ctrl/Cmd+Enter saves the discussion comment, like PR comments
  *   7. Work Item Modal     — PR side-panel work items open in an on-page modal, not a navigation
+ *   8. Work on in Claude   — opt-in button that hands a work item to a local launcher (e.g. cc-wi)
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -1325,6 +1326,130 @@
   }
 
   // ============================================================
+  // Feature 8: Work on in Claude
+  //   A button beside the work item title that hands the item to a launcher on
+  //   the user's own machine. Off by default — it only renders once a URL
+  //   template is stored for this browser, e.g. from the devtools console:
+  //     localStorage.setItem("ado-claude-launch-url", "hammerspoon://cc-wi?id={id}")
+  //   `{id}` is replaced with the work item id and the result is navigated to,
+  //   so the OS opens whatever handles that scheme. Reference setup (macOS):
+  //   Hammerspoon binds hammerspoon://cc-wi and opens an iTerm2 window running
+  //   `cc-wi <id>`, which starts a Claude Code session with the item's context
+  //   (~/.hammerspoon/ccwi.lua on Stan's machine; see README).
+  // ============================================================
+  function createWorkOnInClaude() {
+    const PROCESSED_ATTR = "data-ccwi-processed"
+    const URL_KEY = "ado-claude-launch-url"
+
+    // ">_" prompt glyph
+    const TERMINAL_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>
+      <path d="M4.5 6l2.5 2-2.5 2M8.5 10.5h3"/>
+    </svg>`
+
+    const STYLES = `
+      .ado-ccwi-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 2px 5px;
+        border-radius: 3px;
+        opacity: 0;
+        color: inherit;
+        flex-shrink: 0;
+        transition: opacity 0.15s, background 0.15s;
+        vertical-align: middle;
+      }
+      .work-item-title-textfield:hover .ado-ccwi-btn {
+        opacity: 0.45;
+      }
+      .ado-ccwi-btn:hover {
+        opacity: 1 !important;
+        background: rgba(0,0,0,0.08);
+      }
+      .ado-ccwi-btn.ado-ccwi-sent {
+        opacity: 1 !important;
+        color: #107c10;
+      }
+    `
+
+    function launchUrlTemplate() {
+      return localStorage.getItem(URL_KEY) || ""
+    }
+
+    function buildLaunchUrl(id) {
+      const template = launchUrlTemplate()
+      if (!template || !/^\d+$/.test(id)) return null
+      return template.replace("{id}", id)
+    }
+
+    function currentWorkItemId() {
+      const pathMatch = window.location.pathname.match(/_workitems\/edit\/(\d+)/)
+      return pathMatch?.[1] ?? new URLSearchParams(window.location.search).get("workitem")
+    }
+
+    function launch(btn, url) {
+      // Navigating to a custom scheme hands off to the OS; the page stays put.
+      // Inside the Work Item Modal's iframe, navigate the top window instead so
+      // the browser's "open external app?" prompt shows where the user is looking.
+      let target = window
+      try {
+        if (window.top && window.top.location.origin === location.origin) target = window.top
+      } catch {
+        // cross-origin parent: fall back to this frame
+      }
+      target.location.href = url
+      btn.classList.add("ado-ccwi-sent")
+      btn.innerHTML = CHECK_ICON
+      setTimeout(() => {
+        btn.classList.remove("ado-ccwi-sent")
+        btn.innerHTML = TERMINAL_ICON
+      }, 1500)
+    }
+
+    function processWorkItemPage() {
+      if (!launchUrlTemplate()) return
+      const titleContainer = document.querySelector(
+        `.work-item-title-textfield:not([${PROCESSED_ATTR}])`
+      )
+      if (!titleContainer) return
+      const id = currentWorkItemId()
+      if (!id) return
+      titleContainer.setAttribute(PROCESSED_ATTR, "1")
+      const url = buildLaunchUrl(id)
+      if (!url) return
+
+      const btn = document.createElement("button")
+      btn.className = "ado-ccwi-btn"
+      btn.type = "button"
+      btn.title = `Work on #${id} in Claude Code`
+      btn.dataset.launchUrl = url
+      btn.innerHTML = TERMINAL_ICON
+      btn.addEventListener("click", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        launch(btn, url)
+      })
+      // After the Branch Name copy button, which the earlier feature appends to
+      // the same container.
+      titleContainer.appendChild(btn)
+    }
+
+    return {
+      name: "Work on in Claude",
+      // The full work item edit page and any page where a work item opens as a
+      // side panel (boards/backlogs/queries → ?workitem=NNN); the Work Item
+      // Modal's iframe is the edit page, so it is covered too.
+      match: (url) => url.includes("/_workitems/edit/") || /[?&]workitem=\d/.test(url),
+      init() { injectStyle(STYLES) },
+      process: processWorkItemPage,
+    }
+  }
+
+  // ============================================================
   // Controller
   // ============================================================
   const FEATURES = [
@@ -1335,6 +1460,7 @@
     createOpenInVsCode(),
     createWorkItemHotkeys(),
     createWorkItemModal(),
+    createWorkOnInClaude(),
   ]
 
   function runFeature(f) {
