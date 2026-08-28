@@ -19,6 +19,8 @@ failure in one can't break the others:
    Code extension.
 6. **Work Item Hotkeys** — `Ctrl`/`Cmd` + `Enter` saves the discussion comment
    you're editing, matching the PR comment editor.
+7. **Work Item Modal** — work items in a PR's side panel open in an on-page
+   modal instead of navigating away.
 
 ![Copy button on a PR file header](azureDevops/docs/file-path-copy.png)
 

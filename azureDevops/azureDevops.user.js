@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-28.1
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, and open-PR-in-VS-Code.
+// @version      2026-08-28.2
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, and a work item modal on PR pages.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -24,6 +24,7 @@
  *   4. PR Dashboard Filters — hide drafts, auto-complete PRs, and conflicts
  *   5. Open PR in VS Code  — hand the PR to the AzDO Pull Requests (Multi-Project) VS Code extension
  *   6. Work Item Hotkeys   — Ctrl/Cmd+Enter saves the discussion comment, like PR comments
+ *   7. Work Item Modal     — PR side-panel work items open in an on-page modal, not a navigation
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -862,6 +863,135 @@
   }
 
   // ============================================================
+  // Feature 7: Work Item Modal
+  //   On pull request pages, a plain click on a row in the "Work items" side
+  //   panel opens that work item in an on-page modal instead of navigating
+  //   away. Modifier-clicks and middle-clicks keep the browser's default.
+  //
+  // The modal hosts the work item form in a same-origin iframe with
+  // `?fullScreen=true`, which ADO renders without its header and hub
+  // navigation. The Toolbox runs inside that iframe as well, so the work item
+  // features (branch-name copy, comment hotkey) apply there too. The side
+  // panel does not refresh after the modal closes; ADO's PR page never
+  // live-updates it either.
+  // ============================================================
+  function createWorkItemModal() {
+    const PANEL_ROW = "table.linked-wit-pr-details tr"
+    const WI_LINK = 'a[href*="/_workitems/edit/"]'
+    const OVERLAY_CLASS = "ado-wim-overlay"
+
+    const STYLES = `
+      .${OVERLAY_CLASS} {
+        position: fixed; inset: 0; z-index: 100000;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0, 0, 0, 0.45);
+      }
+      .ado-wim-dialog {
+        display: flex; flex-direction: column;
+        width: min(96vw, 1800px); height: 94vh;
+        background: var(--background-color, #fff); color: var(--text-primary-color, #201f1e);
+        border-radius: 6px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+        overflow: hidden;
+      }
+      .ado-wim-header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 6px 8px 6px 14px; flex: none;
+        border-bottom: 1px solid var(--palette-neutral-10, #e0e0e0);
+        font-size: 13px;
+      }
+      .ado-wim-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .ado-wim-open { color: var(--communication-foreground, #0078d4); text-decoration: none; white-space: nowrap; }
+      .ado-wim-open:hover { text-decoration: underline; }
+      .ado-wim-close {
+        border: none; background: none; cursor: pointer; font-size: 20px; line-height: 1;
+        padding: 4px 8px; border-radius: 4px; color: inherit;
+      }
+      .ado-wim-close:hover { background: var(--palette-neutral-8, #f0f0f0); }
+      .ado-wim-body { position: relative; flex: 1; min-height: 0; }
+      .ado-wim-body iframe { width: 100%; height: 100%; border: none; display: block; }
+      .ado-wim-loading {
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        font-size: 14px; color: var(--text-secondary-color, #605e5c); pointer-events: none;
+      }
+      .ado-wim-dialog.loaded .ado-wim-loading { display: none; }
+    `
+
+    let overlay = null
+
+    function close() {
+      overlay?.remove()
+      overlay = null
+    }
+
+    function open(href, title) {
+      close()
+      const url = new URL(href, location.origin)
+      url.searchParams.set("fullScreen", "true")
+
+      overlay = document.createElement("div")
+      overlay.className = OVERLAY_CLASS
+      overlay.innerHTML = `
+        <div class="ado-wim-dialog" role="dialog" aria-modal="true">
+          <div class="ado-wim-header">
+            <span class="ado-wim-title"></span>
+            <a class="ado-wim-open" target="_blank" rel="noopener">Open full page ↗</a>
+            <button class="ado-wim-close" type="button" aria-label="Close" title="Close (Esc)">×</button>
+          </div>
+          <div class="ado-wim-body">
+            <div class="ado-wim-loading">Loading work item…</div>
+            <iframe title="Work item"></iframe>
+          </div>
+        </div>`
+      const dialog = overlay.firstElementChild
+      dialog.querySelector(".ado-wim-title").textContent = title
+      dialog.querySelector(".ado-wim-open").href = href
+      dialog.querySelector(".ado-wim-close").addEventListener("click", close)
+      // Backdrop click closes; clicks inside the dialog do not.
+      overlay.addEventListener("click", (e) => { if (e.target === overlay) close() })
+      const iframe = dialog.querySelector("iframe")
+      iframe.addEventListener("load", () => dialog.classList.add("loaded"))
+      iframe.src = url.toString()
+
+      document.body.appendChild(overlay)
+      dialog.querySelector(".ado-wim-close").focus()
+    }
+
+    const onClick = (event) => {
+      if (event.button !== 0) return
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+      const row = event.target.closest?.(PANEL_ROW)
+      if (!row) return
+      // The row's own controls (e.g. the remove-link ×) keep working.
+      if (event.target.closest("button")) return
+      const link = row.querySelector(WI_LINK)
+      if (!link) return
+
+      // Capture phase, before ADO's row activation and the link's own handler.
+      event.preventDefault()
+      event.stopPropagation()
+      open(link.href, (link.innerText ?? link.textContent ?? "").trim())
+    }
+
+    const onKeydown = (event) => {
+      if (event.key === "Escape" && overlay) {
+        event.preventDefault()
+        event.stopPropagation()
+        close()
+      }
+    }
+
+    return {
+      name: "Work Item Modal",
+      match: (url) => url.includes("/pullrequest/"),
+      init() {
+        injectStyle(STYLES)
+        document.addEventListener("click", onClick, true)
+        document.addEventListener("keydown", onKeydown, true)
+      },
+    }
+  }
+
+  // ============================================================
   // Feature 4: PR Dashboard Filters
   // Hides PR rows carrying selected Azure DevOps status pills on My pull requests.
   // ============================================================
@@ -1204,6 +1334,7 @@
     createPrDashboardFilters(),
     createOpenInVsCode(),
     createWorkItemHotkeys(),
+    createWorkItemModal(),
   ]
 
   function runFeature(f) {

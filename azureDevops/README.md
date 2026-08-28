@@ -139,6 +139,23 @@ form-wide binding; elsewhere on the form nothing changes.
 
 ---
 
+## 7. Work Item Modal
+
+On a pull request, clicking a row in the **Work items** side panel opens that
+work item in an on-page modal instead of navigating away from the PR.
+
+- **Click** the row — open the work item in the modal.
+- **Cmd/Ctrl/Shift + click** or **middle-click** — browser default (new tab).
+- **Esc**, the **×**, or clicking the backdrop — close the modal.
+- **Open full page ↗** in the modal header — the regular work item page.
+
+The modal hosts the real work item form (`?fullScreen=true`, so no ADO header
+or hub navigation), so editing, commenting and saving all work as usual — and
+the Toolbox's work item features apply inside it. The side panel does not
+refresh when the modal closes; reload the PR to see updated titles or states.
+
+---
+
 > **Upgrading from the old scripts?** This replaces the three separate scripts
 > (`azureDevopsPRs-filePath`, `azureDevopsPRs-hotkeys`,
 > `azureDevops-branchNameFromWI`). Uninstall those from your userscript manager
