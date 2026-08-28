@@ -17,6 +17,8 @@ failure in one can't break the others:
 5. **Open PR in VS Code** — button beside the source branch (or Alt+click the
    branch name) that opens the PR in the AzDO Pull Requests (Multi-Project) VS
    Code extension.
+6. **Work Item Hotkeys** — `Ctrl`/`Cmd` + `Enter` saves the discussion comment
+   you're editing, matching the PR comment editor.
 
 ![Copy button on a PR file header](azureDevops/docs/file-path-copy.png)
 

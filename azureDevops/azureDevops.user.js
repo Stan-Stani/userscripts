@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-27.2
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR keyboard shortcuts, and open-PR-in-VS-Code.
+// @version      2026-08-28.1
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, and open-PR-in-VS-Code.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -23,6 +23,7 @@
  *   3. PR Hotkeys          — keyboard shortcuts for PR comment views + branch copy
  *   4. PR Dashboard Filters — hide drafts, auto-complete PRs, and conflicts
  *   5. Open PR in VS Code  — hand the PR to the AzDO Pull Requests (Multi-Project) VS Code extension
+ *   6. Work Item Hotkeys   — Ctrl/Cmd+Enter saves the discussion comment, like PR comments
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -801,6 +802,66 @@
   }
 
   // ============================================================
+  // Feature 6: Work Item Hotkeys
+  //   Ctrl/Cmd + Enter (extra modifiers ignored) : Save the discussion comment being edited
+  //
+  // Parity with the pull request comment editor, which submits on Ctrl/Cmd+Enter
+  // and ignores any other held modifiers. The work item form has no comment-level
+  // shortcut at all: its Ctrl/Cmd+Enter is a form-wide "Save & Close" registered
+  // through an exact-modifier-match hotkey manager, so a chord like
+  // Cmd+Ctrl+Opt+Enter does nothing there. This handler runs in the capture
+  // phase and swallows the event so that form-wide binding does not also fire.
+  // ============================================================
+  function createWorkItemHotkeys() {
+    const isWorkItemUrl = (url) =>
+      url.includes("/_workitems/edit/") || /[?&]workitem=\d/.test(url)
+
+    const isSaveButton = (btn) => {
+      if (btn.disabled || btn.getAttribute("aria-disabled") === "true") return false
+      const label = ((btn.innerText ?? btn.textContent) || btn.getAttribute("aria-label") || "").trim()
+      return /^save$/i.test(label)
+    }
+
+    // The comment's Save button lives near its editor, not in the form header.
+    // Search outward from the editor and stop before the tab page / form root so
+    // the header's work-item "Save" can never be picked up.
+    function findCommentSaveButton(editor) {
+      let node = editor
+      while (node && node !== document.body) {
+        if (node.matches(".work-item-form-page, .work-item-form")) return null
+        const btn = Array.from(node.querySelectorAll("button")).find(isSaveButton)
+        if (btn) return btn
+        node = node.parentElement
+      }
+      return null
+    }
+
+    const saveComment = (event) => {
+      if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return
+      if (!isWorkItemUrl(location.href)) return
+      const editor = document.activeElement?.closest?.(".comment-editor")
+      if (!editor) return
+
+      const btn = findCommentSaveButton(editor)
+      if (!btn) {
+        console.debug("[ADO Toolbox] Work Item Hotkeys: no comment Save button found")
+        return
+      }
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      btn.click()
+    }
+
+    return {
+      name: "Work Item Hotkeys",
+      match: isWorkItemUrl,
+      init() {
+        document.addEventListener("keydown", saveComment, true)
+      },
+    }
+  }
+
+  // ============================================================
   // Feature 4: PR Dashboard Filters
   // Hides PR rows carrying selected Azure DevOps status pills on My pull requests.
   // ============================================================
@@ -1142,6 +1203,7 @@
     createHotkeys(),
     createPrDashboardFilters(),
     createOpenInVsCode(),
+    createWorkItemHotkeys(),
   ]
 
   function runFeature(f) {

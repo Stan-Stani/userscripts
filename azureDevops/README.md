@@ -124,6 +124,21 @@ scheme, e.g. `vscode-insiders`.
 
 ---
 
+## 6. Work Item Hotkeys
+
+| Action                                | Windows          | macOS           |
+| ------------------------------------- | ---------------- | --------------- |
+| Save the discussion comment you're editing | `Ctrl` + `Enter` | `Cmd` + `Enter` |
+
+Extra held modifiers are ignored, so `Cmd` + `Ctrl` + `Opt` + `Enter` works too —
+the same leniency the pull request comment editor has. Out of the box the work
+item form has no comment shortcut: its `Ctrl`/`Cmd` + `Enter` is a form-wide
+**Save & Close** that only fires on an exact modifier match. While the cursor is
+in a comment editor this shortcut saves just that comment and suppresses the
+form-wide binding; elsewhere on the form nothing changes.
+
+---
+
 > **Upgrading from the old scripts?** This replaces the three separate scripts
 > (`azureDevopsPRs-filePath`, `azureDevopsPRs-hotkeys`,
 > `azureDevops-branchNameFromWI`). Uninstall those from your userscript manager
