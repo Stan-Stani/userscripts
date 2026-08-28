@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-28.3
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and an opt-in work-on-in-Claude launcher button.
+// @version      2026-08-28.4
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and a work-on-in-Claude launcher button.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -25,7 +25,7 @@
  *   5. Open PR in VS Code  — hand the PR to the AzDO Pull Requests (Multi-Project) VS Code extension
  *   6. Work Item Hotkeys   — Ctrl/Cmd+Enter saves the discussion comment, like PR comments
  *   7. Work Item Modal     — PR side-panel work items open in an on-page modal, not a navigation
- *   8. Work on in Claude   — opt-in button that hands a work item to a local launcher (e.g. cc-wi)
+ *   8. Work on in Claude   — button that hands a work item to a launcher on your machine (e.g. cc-wi)
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -1327,12 +1327,13 @@
 
   // ============================================================
   // Feature 8: Work on in Claude
-  //   A button beside the work item title that hands the item to a launcher on
-  //   the user's own machine. Off by default — it only renders once a URL
-  //   template is stored for this browser, e.g. from the devtools console:
-  //     localStorage.setItem("ado-claude-launch-url", "hammerspoon://cc-wi?id={id}")
-  //   `{id}` is replaced with the work item id and the result is navigated to,
-  //   so the OS opens whatever handles that scheme. Reference setup (macOS):
+  //   A ">_" button beside the work item title that hands the item to a launcher
+  //   on the user's own machine. The launcher is a per-browser URL template with
+  //   `{id}` standing in for the work item id; clicking navigates to the result,
+  //   so the OS opens whatever handles that scheme. Nothing is stored until the
+  //   user confirms: the first click opens a small setup popover prefilled with
+  //   the default (hammerspoon://cc-wi?id={id}) and "Save & open"; right-click
+  //   reopens it to change or clear the template. Reference setup (macOS):
   //   Hammerspoon binds hammerspoon://cc-wi and opens an iTerm2 window running
   //   `cc-wi <id>`, which starts a Claude Code session with the item's context
   //   (~/.hammerspoon/ccwi.lua on Stan's machine; see README).
@@ -1340,6 +1341,7 @@
   function createWorkOnInClaude() {
     const PROCESSED_ATTR = "data-ccwi-processed"
     const URL_KEY = "ado-claude-launch-url"
+    const DEFAULT_TEMPLATE = "hammerspoon://cc-wi?id={id}"
 
     // ">_" prompt glyph
     const TERMINAL_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
@@ -1366,13 +1368,75 @@
       .work-item-title-textfield:hover .ado-ccwi-btn {
         opacity: 0.45;
       }
-      .ado-ccwi-btn:hover {
+      .ado-ccwi-btn:hover, .ado-ccwi-btn.ado-ccwi-open {
         opacity: 1 !important;
         background: rgba(0,0,0,0.08);
       }
       .ado-ccwi-btn.ado-ccwi-sent {
         opacity: 1 !important;
         color: #107c10;
+      }
+      .ado-ccwi-popover {
+        position: absolute;
+        z-index: 99999;
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+        padding: 10px 12px;
+        width: 400px;
+        font-size: 12px;
+        font-family: inherit;
+        color: #333;
+      }
+      .ado-ccwi-pop-title {
+        font-weight: 600;
+        font-size: 13px;
+        margin-bottom: 6px;
+      }
+      .ado-ccwi-pop-hint {
+        color: #666;
+        margin-bottom: 8px;
+      }
+      .ado-ccwi-pop-hint code {
+        font-family: monospace;
+        font-size: 11px;
+      }
+      .ado-ccwi-pop-input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        padding: 4px 6px;
+        font-size: 11px;
+        font-family: monospace;
+        margin-bottom: 8px;
+      }
+      .ado-ccwi-pop-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .ado-ccwi-pop-actions button {
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        background: #f5f5f5;
+        padding: 3px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .ado-ccwi-pop-actions button:hover { background: #e8e8e8; }
+      .ado-ccwi-pop-save {
+        background: #0078d4 !important;
+        border-color: #0078d4 !important;
+        color: #fff;
+      }
+      .ado-ccwi-pop-save:hover { background: #106ebe !important; }
+      .ado-ccwi-pop-clear {
+        margin-left: auto;
+        border: none !important;
+        background: none !important;
+        color: #a4262c;
       }
     `
 
@@ -1391,7 +1455,19 @@
       return pathMatch?.[1] ?? new URLSearchParams(window.location.search).get("workitem")
     }
 
-    function launch(btn, url) {
+    function refreshBtn(btn) {
+      const id = btn.dataset.workItemId
+      const url = buildLaunchUrl(id)
+      if (url) btn.dataset.launchUrl = url
+      else delete btn.dataset.launchUrl
+      btn.title = url
+        ? `Work on #${id} in Claude Code\n(Right-click to change the launcher)`
+        : `Work on #${id} in Claude Code\n(Click to set up the launcher)`
+    }
+
+    function launch(btn) {
+      const url = buildLaunchUrl(btn.dataset.workItemId)
+      if (!url) return
       // Navigating to a custom scheme hands off to the OS; the page stays put.
       // Inside the Work Item Modal's iframe, navigate the top window instead so
       // the browser's "open external app?" prompt shows where the user is looking.
@@ -1410,28 +1486,116 @@
       }, 1500)
     }
 
+    // --- Setup popover (first click, or right-click to change) ---
+    let activePopover = null
+    let popoverBtn = null
+
+    function closePopover() {
+      activePopover?.remove()
+      activePopover = null
+      popoverBtn?.classList.remove("ado-ccwi-open")
+      popoverBtn = null
+      document.removeEventListener("mousedown", onOutsideClick, true)
+      document.removeEventListener("keydown", onEscape, true)
+    }
+
+    function onOutsideClick(e) {
+      if (activePopover && !activePopover.contains(e.target) && e.target !== popoverBtn) closePopover()
+    }
+
+    function onEscape(e) {
+      if (e.key === "Escape") { e.stopPropagation(); closePopover() }
+    }
+
+    function showPopover(btn) {
+      closePopover()
+      const current = launchUrlTemplate()
+      const id = btn.dataset.workItemId
+
+      const pop = document.createElement("div")
+      pop.className = "ado-ccwi-popover"
+      pop.innerHTML = `
+        <div class="ado-ccwi-pop-title">Work on this item in Claude Code</div>
+        <div class="ado-ccwi-pop-hint">
+          Opens a URL on your machine with <code>{id}</code> replaced by the work item id
+          (here <code>${id}</code>), so your OS can start a terminal or editor on it.
+          Stored in this browser only.
+        </div>
+        <input class="ado-ccwi-pop-input" type="text" spellcheck="false" />
+        <div class="ado-ccwi-pop-actions">
+          <button type="button" class="ado-ccwi-pop-save">Save &amp; open</button>
+          <button type="button" class="ado-ccwi-pop-cancel">Not now</button>
+          ${current ? `<button type="button" class="ado-ccwi-pop-clear" title="Forget the launcher; the button will ask again">Clear</button>` : ""}
+        </div>
+      `
+      const input = pop.querySelector(".ado-ccwi-pop-input")
+      input.value = current || DEFAULT_TEMPLATE
+
+      function save() {
+        const val = input.value.trim()
+        if (!val) return
+        localStorage.setItem(URL_KEY, val)
+        refreshBtn(btn)
+        closePopover()
+        launch(btn)
+      }
+      pop.querySelector(".ado-ccwi-pop-save").addEventListener("click", save)
+      pop.querySelector(".ado-ccwi-pop-cancel").addEventListener("click", closePopover)
+      pop.querySelector(".ado-ccwi-pop-clear")?.addEventListener("click", () => {
+        localStorage.removeItem(URL_KEY)
+        refreshBtn(btn)
+        closePopover()
+      })
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") save() })
+
+      document.body.appendChild(pop)
+      activePopover = pop
+      popoverBtn = btn
+      btn.classList.add("ado-ccwi-open")
+
+      // Below the button, flipped left if it would overflow the viewport
+      const rect = btn.getBoundingClientRect()
+      pop.style.top = `${rect.bottom + window.scrollY + 4}px`
+      pop.style.left = `${rect.left + window.scrollX}px`
+      requestAnimationFrame(() => {
+        const popRect = pop.getBoundingClientRect()
+        if (popRect.right > window.innerWidth - 8) {
+          pop.style.left = `${rect.right + window.scrollX - popRect.width}px`
+        }
+      })
+
+      setTimeout(() => {
+        document.addEventListener("mousedown", onOutsideClick, true)
+        document.addEventListener("keydown", onEscape, true)
+      }, 0)
+      input.select()
+    }
+
     function processWorkItemPage() {
-      if (!launchUrlTemplate()) return
       const titleContainer = document.querySelector(
         `.work-item-title-textfield:not([${PROCESSED_ATTR}])`
       )
       if (!titleContainer) return
       const id = currentWorkItemId()
-      if (!id) return
+      if (!id || !/^\d+$/.test(id)) return
       titleContainer.setAttribute(PROCESSED_ATTR, "1")
-      const url = buildLaunchUrl(id)
-      if (!url) return
 
       const btn = document.createElement("button")
       btn.className = "ado-ccwi-btn"
       btn.type = "button"
-      btn.title = `Work on #${id} in Claude Code`
-      btn.dataset.launchUrl = url
+      btn.dataset.workItemId = id
       btn.innerHTML = TERMINAL_ICON
+      refreshBtn(btn)
       btn.addEventListener("click", (e) => {
         e.preventDefault()
         e.stopPropagation()
-        launch(btn, url)
+        if (launchUrlTemplate()) launch(btn)
+        else showPopover(btn)
+      })
+      btn.addEventListener("contextmenu", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        showPopover(btn)
       })
       // After the Branch Name copy button, which the earlier feature appends to
       // the same container.

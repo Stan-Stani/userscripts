@@ -163,22 +163,19 @@ refresh when the modal closes; reload the PR to see updated titles or states.
 
 ---
 
-## 8. Work on in Claude (opt-in)
+## 8. Work on in Claude
 
 Adds a `>_` button beside the work item title that hands the item to a launcher
 on **your own machine** — for example a terminal that starts a Claude Code
 session with the work item's context already loaded.
 
-It is off by default. Enable it per browser by storing a URL template from the
-devtools console:
-
-```js
-localStorage.setItem("ado-claude-launch-url", "hammerspoon://cc-wi?id={id}")
-```
-
-`{id}` is replaced with the work item id and the button navigates to the
-result, so your OS opens whatever handles that scheme (the browser asks once
-whether to allow it — tick "remember"). Remove the key to hide the button again.
+Nothing runs until you say so: the **first click opens a small setup popover**
+with a URL template, prefilled with `hammerspoon://cc-wi?id={id}`. Edit it if
+your launcher differs, then **Save & open**. `{id}` is replaced with the work
+item id and the button navigates to the result, so your OS opens whatever
+handles that scheme (the browser asks once whether to allow it — tick
+"remember"). The template is stored in that browser only; **right-click** the
+button any time to change or clear it.
 
 Reference setup on macOS with [Hammerspoon](https://www.hammerspoon.org/) and
 iTerm2, where `cc-wi <id>` is a local script that fetches the work item and
