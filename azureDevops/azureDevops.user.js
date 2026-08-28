@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-28.4
+// @version      2026-08-28.5
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and a work-on-in-Claude launcher button.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -818,6 +818,12 @@
     const isWorkItemUrl = (url) =>
       url.includes("/_workitems/edit/") || /[?&]workitem=\d/.test(url)
 
+    // Opt-in diagnostics: localStorage["ado-toolbox-debug"] = "1" on the ADO origin.
+    const debugEnabled = () => {
+      try { return localStorage.getItem("ado-toolbox-debug") === "1" } catch { return false }
+    }
+    const debug = (msg, data) => { if (debugEnabled()) console.info(`[ADO Toolbox] Work Item Hotkeys: ${msg}`, data ?? "") }
+
     const isSaveButton = (btn) => {
       if (btn.disabled || btn.getAttribute("aria-disabled") === "true") return false
       const label = ((btn.innerText ?? btn.textContent) || btn.getAttribute("aria-label") || "").trim()
@@ -840,17 +846,25 @@
 
     const saveComment = (event) => {
       if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return
+      const active = document.activeElement
+      const editor = active?.closest?.(".comment-editor")
+      debug("Ctrl/Cmd+Enter received", {
+        url: location.href,
+        meta: event.metaKey, ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey,
+        activeElement: active ? `${active.tagName}.${active.className}` : null,
+        inCommentEditor: !!editor,
+      })
       if (!isWorkItemUrl(location.href)) return
-      const editor = document.activeElement?.closest?.(".comment-editor")
       if (!editor) return
 
       const btn = findCommentSaveButton(editor)
       if (!btn) {
-        console.debug("[ADO Toolbox] Work Item Hotkeys: no comment Save button found")
+        debug("no enabled comment Save button found")
         return
       }
       event.preventDefault()
       event.stopImmediatePropagation()
+      debug("clicking comment Save")
       btn.click()
     }
 
@@ -859,6 +873,7 @@
       match: isWorkItemUrl,
       init() {
         document.addEventListener("keydown", saveComment, true)
+        debug("armed", { url: location.href, userAgent: navigator.userAgent })
       },
     }
   }

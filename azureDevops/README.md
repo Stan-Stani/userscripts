@@ -137,6 +137,10 @@ item form has no comment shortcut: its `Ctrl`/`Cmd` + `Enter` is a form-wide
 in a comment editor this shortcut saves just that comment and suppresses the
 form-wide binding; elsewhere on the form nothing changes.
 
+Troubleshooting: run `localStorage.setItem("ado-toolbox-debug", "1")` in the
+browser console on `dev.azure.com`, reload, and the feature logs what it sees
+(`[ADO Toolbox] Work Item Hotkeys: …`) when it arms and on every Ctrl/Cmd+Enter.
+
 ---
 
 ## 7. Work Item Modal
