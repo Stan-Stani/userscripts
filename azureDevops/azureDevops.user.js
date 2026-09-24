@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-08-28.5
+// @version      2026-09-24.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and a work-on-in-Claude launcher button.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1392,7 +1392,7 @@
         color: #107c10;
       }
       .ado-ccwi-popover {
-        position: absolute;
+        position: fixed;
         z-index: 99999;
         background: #fff;
         border: 1px solid #ccc;
@@ -1563,19 +1563,24 @@
       })
       input.addEventListener("keydown", (e) => { if (e.key === "Enter") save() })
 
-      document.body.appendChild(pop)
+      // Work item dialogs (taskboard, backlog) render in a portal stacked above
+      // anything on <body>, so a popover there would open hidden behind the
+      // dialog. Mount it inside the dialog instead; position: fixed keeps it
+      // from being clipped by the dialog's scroll container.
+      const host = btn.closest('[role="dialog"]') ?? document.body
+      host.appendChild(pop)
       activePopover = pop
       popoverBtn = btn
       btn.classList.add("ado-ccwi-open")
 
       // Below the button, flipped left if it would overflow the viewport
       const rect = btn.getBoundingClientRect()
-      pop.style.top = `${rect.bottom + window.scrollY + 4}px`
-      pop.style.left = `${rect.left + window.scrollX}px`
+      pop.style.top = `${rect.bottom + 4}px`
+      pop.style.left = `${rect.left}px`
       requestAnimationFrame(() => {
         const popRect = pop.getBoundingClientRect()
         if (popRect.right > window.innerWidth - 8) {
-          pop.style.left = `${rect.right + window.scrollX - popRect.width}px`
+          pop.style.left = `${rect.right - popRect.width}px`
         }
       })
 
