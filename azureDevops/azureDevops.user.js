@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-09-24.1
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and a work-on-in-Claude launcher button.
+// @version      2026-10-28.1
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and a work-on-in-Claude launcher button.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -26,6 +26,7 @@
  *   6. Work Item Hotkeys   — Ctrl/Cmd+Enter saves the discussion comment, like PR comments
  *   7. Work Item Modal     — PR side-panel work items open in an on-page modal, not a navigation
  *   8. Work on in Claude   — button that hands a work item to a launcher on your machine (e.g. cc-wi)
+ *   9. PR Dashboard Commenters — commenters' photos + hover previews of new comments on My pull requests
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -53,12 +54,11 @@
     document.head.appendChild(style)
   }
 
-  // Identify the PR the current page belongs to. Works for both
-  // dev.azure.com/{org}/{project}/_git/... and legacy
+  // Identify the PR the current page (or a given PR link's path) belongs to.
+  // Works for both dev.azure.com/{org}/{project}/_git/... and legacy
   // {account}.visualstudio.com/[{collection}/]{project}/_git/... — REST API and
   // PR page paths both live under the prefix that precedes "/_git/".
-  function currentPrInfo() {
-    const path = location.pathname
+  function currentPrInfo(path = location.pathname) {
     const idx = path.indexOf("/_git/")
     if (idx === -1) return null
     const prefix = path.slice(0, idx)
@@ -1634,6 +1634,561 @@
   }
 
   // ============================================================
+  // Feature 9: PR Dashboard Commenters
+  // On My pull requests, a row whose updates say "N new comments" gets the
+  // commenters' photos in front of that text, people before service
+  // identities. Hovering the updates cell opens a card previewing each new
+  // comment (who, when, file, text) with a link to its thread; hovering a
+  // preview shows that comment in full beside the card. The Filter PRs
+  // menu (Feature 4) gets a "Hide comments from" section to drop people such
+  // as the AI-review build service; stored in localStorage.
+  //
+  // ADO counts "new" against your last visit to the PR, which only the
+  // undocumented visits API exposes (artifactVisitsBatch → lastVisitedDate;
+  // a batch read, it does not record a visit). Text comments by others
+  // published after that are the new ones. ADO's count is of threads, so it
+  // can differ from the number of comments the card lists.
+  // ============================================================
+  function createPrDashboardCommenters() {
+    const STACK_CLASS = "ado-pr-commenters"
+    const CARD_CLASS = "ado-pr-commenters-card"
+    // ADO's localized "{0} new comment(s)" string; English-only like the rest
+    // of the Toolbox's text matching.
+    const NEW_COMMENTS_RE = /\d+ new comments?/
+    // The updates column is 190px; three 20px photos leave room for the text.
+    const MAX_AVATARS = 3
+    const MAX_PREVIEWS = 5
+    const HIDDEN_KEY = "ado-pr-hidden-commenters"
+    const SECTION_CLASS = "ado-pr-commenter-filters"
+    // "{PR path}|{updates text}" → Promise of new comments (newest first) or
+    // null. Keying on the text refetches once ADO reports more comments.
+    const commentsByKey = new Map()
+    // Everyone loaded so far, hidden or not: id → { name, isPerson }.
+    const seenCommenters = new Map()
+    // Updates cell → { comments, prUrl } for its hover card.
+    const cellData = new WeakMap()
+    const hoverBound = new WeakSet()
+    // The hover card, and the panel beside it with one comment in full.
+    let card = null
+    let full = null
+    let showTimer = 0
+    let hideTimer = 0
+    let fullTimer = 0
+
+    const STYLES = `
+      .${STACK_CLASS} {
+        display: inline-flex;
+        flex-shrink: 0;
+        margin: -2px 8px -2px 0;
+      }
+      .${STACK_CLASS} > * + * { margin-left: -6px; }
+      /* The photos sit in the line's flex row, beside ADO's ellipsis text:
+         the row must not clip them (they're taller than the text) and the
+         text must still shrink to its ellipsis. */
+      .repos-pr-list-updates .bolt-table-two-line-cell-item:has(> .${STACK_CLASS}) {
+        overflow: visible;
+        align-items: center;
+      }
+      .repos-pr-list-updates .bolt-table-two-line-cell-item:has(> .${STACK_CLASS}) > .text-ellipsis {
+        min-width: 0;
+      }
+      /* Initials and "+N" come from CSS so they never join the cell's text. */
+      .${STACK_CLASS}-avatar[data-label]::before { content: attr(data-label); }
+      .${STACK_CLASS}-avatar {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        box-shadow: 0 0 0 2px var(--background-color, #fff);
+        object-fit: cover;
+        background: #605e5c;
+        color: #fff;
+        font-size: 9px;
+        font-weight: 600;
+      }
+      .${STACK_CLASS}-avatar.${STACK_CLASS}-more {
+        background: var(--palette-black-alpha-10, rgba(0, 0, 0, 0.1));
+        color: var(--text-primary-color, rgba(0, 0, 0, 0.9));
+      }
+      .${CARD_CLASS} {
+        position: fixed;
+        z-index: 100000;
+        width: 360px;
+        box-sizing: border-box;
+        padding: 14px 16px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: var(--callout-background-color, #fff);
+        color: var(--text-primary-color, rgba(0, 0, 0, 0.9));
+        border-radius: 6px;
+        box-shadow: 0 6.4px 14.4px rgba(0, 0, 0, 0.13), 0 1.2px 3.6px rgba(0, 0, 0, 0.11);
+        font-size: 13px;
+      }
+      .${CARD_CLASS}[hidden] { display: none; }
+      /* ADO's overflow tooltip for the truncated updates text would sit on
+         top of the card. */
+      body:has(.${CARD_CLASS}:not([hidden])) .bolt-tooltip-portal { display: none; }
+      .${CARD_CLASS}-title { font-size: 14px; font-weight: 600; }
+      .${CARD_CLASS}-item {
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr);
+        column-gap: 10px;
+        margin: -4px -6px;
+        padding: 4px 6px;
+        border-radius: 4px;
+        color: inherit !important;
+        text-decoration: none !important;
+      }
+      .${CARD_CLASS}-item:hover { background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06)); }
+      .${CARD_CLASS}-item .${STACK_CLASS}-avatar {
+        width: 24px;
+        height: 24px;
+        box-shadow: none;
+        font-size: 10px;
+      }
+      .${CARD_CLASS}-body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+      .${CARD_CLASS}-meta { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+      .${CARD_CLASS}-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .${CARD_CLASS}-secondary { color: var(--text-secondary-color, rgba(0, 0, 0, 0.55)); white-space: nowrap; }
+      .${CARD_CLASS}-file {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-family: Consolas, "SF Mono", Menlo, monospace;
+        font-size: 11px;
+      }
+      .${CARD_CLASS}-text {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        line-height: 18px;
+      }
+      .${CARD_CLASS}-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding-top: 10px;
+        border-top: 1px solid var(--palette-black-alpha-10, rgba(0, 0, 0, 0.1));
+      }
+      .${CARD_CLASS}-full {
+        width: 480px;
+        max-height: min(70vh, 600px);
+        overflow-y: auto;
+        gap: 8px;
+      }
+      .${CARD_CLASS}-full .${CARD_CLASS}-text {
+        display: block;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .${SECTION_CLASS} {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(0, 0, 0, 0.1);
+      }
+      .${SECTION_CLASS}-title {
+        padding: 0 12px 4px;
+        font-size: 12px;
+        font-weight: 600;
+        opacity: 0.7;
+      }
+    `
+
+    // [{ id, name }]; the name lets the menu list people not on the page.
+    function getHidden() {
+      try { return JSON.parse(localStorage.getItem(HIDDEN_KEY)) || [] } catch { return [] }
+    }
+    function saveHidden(list) {
+      localStorage.setItem(HIDDEN_KEY, JSON.stringify(list))
+    }
+    function visibleComments(comments) {
+      const hiddenIds = new Set(getHidden().map((h) => h.id))
+      return comments.filter((c) => !hiddenIds.has(c.authorId))
+    }
+
+    // Visits is collection-level only: it 404s under a project path.
+    function collectionUrl(prefix) {
+      return location.hostname.toLowerCase() === "dev.azure.com"
+        ? `${location.origin}/${prefix.split("/")[1]}`
+        : location.origin
+    }
+
+    async function fetchJson(url, body) {
+      const response = await fetch(url, {
+        method: body ? "POST" : "GET",
+        credentials: "include",
+        headers: body
+          ? { Accept: "application/json", "Content-Type": "application/json" }
+          : { Accept: "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+      if (!response.ok) throw new Error(`${response.status} from ${url}`)
+      return response.json()
+    }
+
+    // Markdown reduced to readable plain text (always shown as text, never
+    // HTML). The card's two-line preview collapses the line breaks; the full
+    // comment panel keeps them.
+    function plainText(markdown) {
+      return markdown
+        .replace(/```[^\n]*\n?/g, "")
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, "[image]")
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/<[^>]+>/g, "")
+        .replace(/^[ \t]*(#{1,6}|>)[ \t]*/gm, "")
+        .replace(/^([ \t]*)[-*+][ \t]+/gm, "$1• ")
+        .replace(/[*`~]/g, "")
+        .replace(/[ \t]+$/gm, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
+    }
+
+    async function loadNewComments(info) {
+      const api =
+        `${location.origin}${info.prefix}/_apis/git/repositories/` +
+        `${info.repo}/pullRequests/${info.prId}`
+      // The visits artifact id needs the project and repository GUIDs; the
+      // row link only has their names.
+      const pr = await fetchJson(`${api}?api-version=7.1`)
+      const artifactId =
+        `vstfs:///Git/PullRequestId/${pr.repository.project.id}` +
+        `%2F${pr.repository.id}%2F${pr.pullRequestId}`
+      const [visits, threads] = await Promise.all([
+        fetchJson(
+          `${collectionUrl(info.prefix)}/_apis/visits/artifactVisitsBatch?api-version=7.1-preview.1`,
+          [{ artifactId }]
+        ),
+        fetchJson(`${api}/threads?api-version=7.1`),
+      ])
+      const visit = visits.value && visits.value[0]
+      const since = Date.parse(visit && visit.lastVisitedDate)
+      if (Number.isNaN(since)) return null
+      const me = visit.user && visit.user.id
+
+      return threads.value
+        .flatMap((thread) => (thread.comments || []).map((comment) => ({ thread, comment })))
+        .filter(
+          ({ comment: c }) =>
+            c.commentType === "text" &&
+            !c.isDeleted &&
+            c.author.id !== me &&
+            Date.parse(c.publishedDate) > since
+        )
+        .sort((a, b) => Date.parse(b.comment.publishedDate) - Date.parse(a.comment.publishedDate))
+        .map(({ thread, comment: c }) => {
+          const ctx = thread.threadContext
+          const line =
+            ctx &&
+            ((ctx.rightFileStart && ctx.rightFileStart.line) ||
+              (ctx.leftFileStart && ctx.leftFileStart.line))
+          return {
+            authorId: c.author.id,
+            // "Core API Build Service (SteffesGroup)" → "Core API Build Service"
+            name: c.author.displayName.replace(/\s*\(.*\)$/, ""),
+            avatarUrl:
+              (c.author._links && c.author._links.avatar && c.author._links.avatar.href) ||
+              c.author.imageUrl,
+            // Service identities (AI review, pipelines) have no email.
+            isPerson: (c.author.uniqueName || "").includes("@"),
+            published: c.publishedDate,
+            file: ctx && ctx.filePath ? `${ctx.filePath}${line ? `:${line}` : ""}` : "",
+            text: plainText(c.content || ""),
+            threadId: thread.id,
+          }
+        })
+    }
+
+    // One entry per author, newest first, people ahead of service identities.
+    function authorsOf(comments) {
+      const byId = new Map()
+      comments.forEach((c) => byId.has(c.authorId) || byId.set(c.authorId, c))
+      return [...byId.values()].sort((a, b) => b.isPerson - a.isPerson)
+    }
+
+    function timeAgo(iso) {
+      const minutes = Math.floor((Date.now() - Date.parse(iso)) / 60000)
+      if (minutes < 1) return "just now"
+      if (minutes < 60) return `${minutes}m ago`
+      const hours = Math.floor(minutes / 60)
+      if (hours < 24) return `${hours}h ago`
+      const days = Math.floor(hours / 24)
+      return days < 7 ? `${days}d ago` : new Date(iso).toLocaleDateString()
+    }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag)
+      if (className) node.className = className
+      if (text !== undefined) node.textContent = text
+      return node
+    }
+
+    // The photo, or the person's initials when there is none or it fails.
+    function avatar(person) {
+      const initials = person.name
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((word) => word[0].toUpperCase())
+        .join("")
+      const fallback = el("span", `${STACK_CLASS}-avatar`)
+      fallback.dataset.label = initials
+      if (!person.avatarUrl) return fallback
+      const img = el("img", `${STACK_CLASS}-avatar`)
+      img.alt = ""
+      img.src = person.avatarUrl
+      img.addEventListener("error", () => img.replaceWith(fallback), { once: true })
+      return img
+    }
+
+    function makeStack(authors) {
+      const stack = el("span", STACK_CLASS)
+      stack.setAttribute("role", "img")
+      stack.setAttribute("aria-label", `New comments from ${authors.map((a) => a.name).join(", ")}`)
+      const shown = authors.length > MAX_AVATARS ? authors.slice(0, MAX_AVATARS - 1) : authors
+      shown.forEach((a) => stack.appendChild(avatar(a)))
+      if (shown.length < authors.length) {
+        const more = el("span", `${STACK_CLASS}-avatar ${STACK_CLASS}-more`)
+        more.dataset.label = `+${authors.length - shown.length}`
+        stack.appendChild(more)
+      }
+      return stack
+    }
+
+    function hideFull() {
+      if (full) full.hidden = true
+    }
+    function scheduleFullHide() {
+      clearTimeout(fullTimer)
+      fullTimer = setTimeout(hideFull, 150)
+    }
+    function hideCard() {
+      clearTimeout(showTimer)
+      if (card) card.hidden = true
+      hideFull()
+    }
+    function scheduleHide() {
+      clearTimeout(hideTimer)
+      hideTimer = setTimeout(hideCard, 150)
+    }
+
+    function getCard() {
+      if (card) return card
+      card = el("div", CARD_CLASS)
+      card.hidden = true
+      card.addEventListener("mouseenter", () => clearTimeout(hideTimer))
+      card.addEventListener("mouseleave", scheduleHide)
+      full = el("div", `${CARD_CLASS} ${CARD_CLASS}-full`)
+      full.hidden = true
+      full.addEventListener("mouseenter", () => {
+        clearTimeout(hideTimer)
+        clearTimeout(fullTimer)
+      })
+      full.addEventListener("mouseleave", () => {
+        scheduleHide()
+        scheduleFullHide()
+      })
+      document.body.append(card, full)
+      // Fixed-position, so any page scroll would leave them behind; the full
+      // comment panel scrolls itself.
+      document.addEventListener("scroll", (e) => e.target !== full && hideCard(), true)
+      return card
+    }
+
+    // The whole comment beside the card (left of it, else right), level with
+    // the hovered preview, so the card never reflows under the pointer.
+    function showFull(item, c) {
+      const meta = el("div", `${CARD_CLASS}-meta`)
+      meta.append(el("span", `${CARD_CLASS}-name`, c.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(c.published)))
+      const parts = [meta]
+      if (c.file) parts.push(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
+      parts.push(el("div", `${CARD_CLASS}-text`, c.text))
+      full.replaceChildren(...parts)
+      full.scrollTop = 0
+      full.hidden = false
+
+      const cardRect = card.getBoundingClientRect()
+      const itemRect = item.getBoundingClientRect()
+      const { offsetWidth: width, offsetHeight: height } = full
+      const leftOfCard = cardRect.left - width - 8
+      full.style.left = `${leftOfCard >= 8 ? leftOfCard : Math.min(cardRect.right + 8, innerWidth - width - 8)}px`
+      full.style.top = `${Math.max(8, Math.min(itemRect.top - 10, innerHeight - height - 8))}px`
+    }
+
+    function showCard(cell) {
+      const data = cellData.get(cell)
+      const comments = data && visibleComments(data.comments)
+      if (!comments || !comments.length || !cell.isConnected) return
+      const box = getCard()
+
+      const items = comments.slice(0, MAX_PREVIEWS).map((c) => {
+        const item = el("a", `${CARD_CLASS}-item`)
+        const url = new URL(data.prUrl)
+        url.searchParams.set("discussionId", c.threadId)
+        item.href = url.href
+        const meta = el("div", `${CARD_CLASS}-meta`)
+        meta.append(el("span", `${CARD_CLASS}-name`, c.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(c.published)))
+        const body = el("div", `${CARD_CLASS}-body`)
+        body.append(meta)
+        if (c.file) body.append(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
+        body.append(el("div", `${CARD_CLASS}-text`, c.text))
+        item.append(avatar(c), body)
+        item.addEventListener("mouseenter", () => {
+          clearTimeout(fullTimer)
+          showFull(item, c)
+        })
+        item.addEventListener("mouseleave", scheduleFullHide)
+        return item
+      })
+      const footer = el("div", `${CARD_CLASS}-footer`)
+      const open = el("a", "", "Open pull request")
+      open.href = data.prUrl
+      footer.append(open)
+      if (comments.length > MAX_PREVIEWS) {
+        footer.append(el("span", `${CARD_CLASS}-secondary`, `+${comments.length - MAX_PREVIEWS} more`))
+      }
+      box.replaceChildren(el("div", `${CARD_CLASS}-title`, "New since your last visit"), ...items, footer)
+      box.hidden = false
+
+      // Below the cell, right-aligned with it; above it when there's no room.
+      const rect = cell.getBoundingClientRect()
+      const { offsetWidth: width, offsetHeight: height } = box
+      const below = rect.bottom + 4
+      box.style.left = `${Math.max(8, Math.min(rect.right - width, innerWidth - width - 8))}px`
+      box.style.top = `${below + height > innerHeight - 8 ? Math.max(8, rect.top - height - 4) : below}px`
+    }
+
+    function bindHover(cell) {
+      if (hoverBound.has(cell)) return
+      hoverBound.add(cell)
+      cell.addEventListener("mouseenter", () => {
+        clearTimeout(hideTimer)
+        clearTimeout(showTimer)
+        showTimer = setTimeout(() => showCard(cell), 250)
+      })
+      cell.addEventListener("mouseleave", () => {
+        clearTimeout(showTimer)
+        scheduleHide()
+      })
+    }
+
+    function onHiddenToggle(id, name, hide) {
+      const list = getHidden().filter((h) => h.id !== id)
+      if (hide) list.push({ id, name })
+      saveHidden(list)
+      document.querySelectorAll(`.${STACK_CLASS}`).forEach((stack) => stack.remove())
+      hideCard()
+      processUpdatesCells()
+    }
+
+    // Appended to Feature 4's menu; rebuilt only when the set of people
+    // changes, so toggling a checkbox doesn't redraw under the pointer.
+    function renderFilterSection() {
+      const menu = document.querySelector("#ado-pr-filter-control .ado-pr-filter-menu")
+      if (!menu) return
+      const hidden = getHidden()
+      const hiddenIds = new Set(hidden.map((h) => h.id))
+      const people = new Map(seenCommenters)
+      hidden.forEach((h) => people.has(h.id) || people.set(h.id, { name: h.name, isPerson: true }))
+
+      let section = menu.querySelector(`.${SECTION_CLASS}`)
+      const signature = [...people.keys()].sort().join(",")
+      if (section && section.dataset.signature === signature) return
+      if (!people.size) {
+        section?.remove()
+        return
+      }
+      if (!section) {
+        section = el("div", SECTION_CLASS)
+        menu.appendChild(section)
+      }
+      section.dataset.signature = signature
+
+      const options = [...people]
+        .sort(([, a], [, b]) => b.isPerson - a.isPerson || a.name.localeCompare(b.name))
+        .map(([id, { name }]) => {
+          const label = el("label", "ado-pr-filter-option")
+          label.setAttribute("role", "menuitemcheckbox")
+          const input = el("input")
+          input.type = "checkbox"
+          input.checked = hiddenIds.has(id)
+          input.addEventListener("change", () => onHiddenToggle(id, name, input.checked))
+          label.append(input, el("span", "", name))
+          return label
+        })
+      section.replaceChildren(el("div", `${SECTION_CLASS}-title`, "Hide comments from"), ...options)
+    }
+
+    function findNewCommentsText(cell) {
+      const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (NEW_COMMENTS_RE.test(node.nodeValue)) return node
+      }
+      return null
+    }
+
+    function processUpdatesCells() {
+      // The menu is created on Feature 4's own schedule; cheap no-op otherwise.
+      renderFilterSection()
+      document.querySelectorAll(".repos-pr-list-updates").forEach((cell) => {
+        const textNode = findNewCommentsText(cell)
+        // The photos sit beside ADO's text, so they outlive a change to it
+        // ("3 new comments" → "4 new comments"); rebuild them when it moves on.
+        const existing = cell.querySelector(`.${STACK_CLASS}`)
+        if (existing) {
+          if (textNode && existing.dataset.text === textNode.nodeValue) return
+          existing.remove()
+        }
+        if (!textNode) return
+        // Rows are <a role="row" href=".../pullrequest/N">; keep a fallback
+        // for a title link in case ADO moves the href off the row.
+        const row = cell.closest('[role="row"]')
+        const link = row && (row.matches("a[href]") ? row : row.querySelector('a[href*="/pullrequest/"]'))
+        const info = link && currentPrInfo(new URL(link.href, location.origin).pathname)
+        if (!info) return
+
+        const key = `${info.prefix}/${info.repo}/${info.prId}|${textNode.nodeValue}`
+        if (!commentsByKey.has(key)) {
+          commentsByKey.set(
+            key,
+            loadNewComments(info).catch((e) => {
+              console.error(`[ADO Toolbox] Could not load new comments for PR ${info.prId}:`, e)
+              return null
+            })
+          )
+        }
+        commentsByKey.get(key).then((comments) => {
+          if (!comments) return
+          comments.forEach((c) => {
+            if (!seenCommenters.has(c.authorId)) seenCommenters.set(c.authorId, { name: c.name, isPerson: c.isPerson })
+          })
+          renderFilterSection()
+          const visible = visibleComments(comments)
+          // ADO's ellipsis div, inside the first line's flex row.
+          const line = textNode.parentElement
+          if (!visible.length || !textNode.isConnected || !line.parentElement) return
+          if (cell.querySelector(`.${STACK_CLASS}`)) return
+          const stack = makeStack(authorsOf(visible))
+          stack.dataset.text = textNode.nodeValue
+          line.parentElement.insertBefore(stack, line)
+          cellData.set(cell, { comments, prUrl: link.href })
+          bindHover(cell)
+        })
+      })
+    }
+
+    return {
+      name: "PR Dashboard Commenters",
+      match: (url) => new URL(url).pathname.endsWith("/_pulls"),
+      init() { injectStyle(STYLES) },
+      process: processUpdatesCells,
+    }
+  }
+
+  // ============================================================
   // Controller
   // ============================================================
   const FEATURES = [
@@ -1645,6 +2200,7 @@
     createWorkItemHotkeys(),
     createWorkItemModal(),
     createWorkOnInClaude(),
+    createPrDashboardCommenters(),
   ]
 
   function runFeature(f) {

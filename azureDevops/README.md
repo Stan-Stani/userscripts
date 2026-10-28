@@ -4,7 +4,7 @@ A single userscript for the whole team that adds quality-of-life helpers to
 Azure DevOps pull requests and work items. Install once; it auto-updates from
 this repo.
 
-It bundles eight features, each isolated so a failure in one can't break the
+It bundles nine features, each isolated so a failure in one can't break the
 others.
 
 > The screenshots below use placeholder data — paths, work items, and branch
@@ -199,3 +199,18 @@ hs.urlevent.bind("cc-wi", function(_, params)
   ]], id))
 end)
 ```
+
+---
+
+## 9. PR Dashboard Commenters
+
+On **My pull requests**, rows with "N new comments" show the photos of whoever
+commented since you last opened the PR, people before service accounts (AI
+review, pipelines). **Hover** the updates cell for a card previewing each new
+comment — who, when, which file and line, and the first two lines. Hover a
+preview to read the whole comment in a panel beside the card; click it to jump
+straight to its thread.
+
+To drop someone (e.g. **Core API Build Service**), open **Filter PRs** and tick
+them under **Hide comments from**. The list is stored in `localStorage` on the
+Azure DevOps origin, so it survives reloads.
