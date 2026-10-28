@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-10-28.1
+// @version      2026-10-28.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and a work-on-in-Claude launcher button.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1778,10 +1778,16 @@
         width: 480px;
         max-height: min(70vh, 600px);
         overflow-y: auto;
+        /* Scrolling past the end would scroll the page, which closes it. */
+        overscroll-behavior: contain;
         gap: 8px;
       }
+      /* Flex items would shrink to fit and clip the comment instead of
+         letting the panel scroll. */
+      .${CARD_CLASS}-full > * { flex-shrink: 0; }
       .${CARD_CLASS}-full .${CARD_CLASS}-text {
         display: block;
+        overflow: visible;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
