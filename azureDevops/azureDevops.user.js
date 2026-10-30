@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-10-30.3
+// @version      2026-10-30.4
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -27,7 +27,7 @@
  *   6. Work Item Hotkeys   — Ctrl/Cmd+Enter saves the discussion comment, like PR comments
  *   7. Work Item Modal     — PR side-panel work items open in an on-page modal, not a navigation
  *   8. Work on in Claude   — button that hands a work item to a launcher on your machine (e.g. cc-wi)
- *   9. PR Dashboard Commenters — commenters' photos + hover previews of new comments on My pull requests
+ *   9. PR Dashboard Commenters — commenters' photos + hover previews of new comments and unresolved threads on My pull requests
  *  10. PR Claude Sessions — the PR's claude.ai session links + a resume-locally launcher in its side pane
  *
  * To add a feature: write a create*() factory returning
@@ -1701,9 +1701,12 @@
   // commenters' photos in front of that text, people before service
   // identities. Hovering the updates cell opens a card previewing each new
   // comment (who, when, file, text) with a link to its thread; hovering a
-  // preview shows that comment in full beside the card. The Filter PRs
-  // menu (Feature 4) gets a "Hide comments from" section to drop people such
-  // as the AI-review build service; stored in localStorage.
+  // preview shows that comment in full beside the card. Hovering a comment
+  // count with unresolved threads ("2 / 3") opens the same card for those
+  // threads, each by its opening comment, fetched on the first hover. The
+  // Filter PRs menu (Feature 4) gets a "Hide comments from" section to drop
+  // people such as the AI-review build service from both; stored in
+  // localStorage.
   //
   // ADO counts "new" against your last visit to the PR, which only the
   // undocumented visits API exposes (artifactVisitsBatch → lastVisitedDate;
@@ -1731,6 +1734,8 @@
     // "{PR path}|{updates text}" → Promise of new comments (newest first) or
     // null. Keying on the text refetches once ADO reports more comments.
     const commentsByKey = new Map()
+    // Same for unresolved threads, keyed on "{PR path}|{comment count}".
+    const threadsByKey = new Map()
     // Everyone loaded so far, hidden or not: id → { name, isPerson }.
     const seenCommenters = new Map()
     // Updates cell → { comments, prUrl } for its hover card.
@@ -1742,6 +1747,7 @@
     let showTimer = 0
     let hideTimer = 0
     let fullTimer = 0
+    let hovered = null
 
     const STYLES = `
       .${STACK_CLASS} {
@@ -1915,6 +1921,28 @@
         .trim()
     }
 
+    function preview(thread, c) {
+      const ctx = thread.threadContext
+      const line =
+        ctx &&
+        ((ctx.rightFileStart && ctx.rightFileStart.line) ||
+          (ctx.leftFileStart && ctx.leftFileStart.line))
+      return {
+        authorId: c.author.id,
+        // "Core API Build Service (SteffesGroup)" → "Core API Build Service"
+        name: c.author.displayName.replace(/\s*\(.*\)$/, ""),
+        avatarUrl:
+          (c.author._links && c.author._links.avatar && c.author._links.avatar.href) ||
+          c.author.imageUrl,
+        // Service identities (AI review, pipelines) have no email.
+        isPerson: (c.author.uniqueName || "").includes("@"),
+        published: c.publishedDate,
+        file: ctx && ctx.filePath ? `${ctx.filePath}${line ? `:${line}` : ""}` : "",
+        text: plainText(c.content || ""),
+        threadId: thread.id,
+      }
+    }
+
     async function loadNewComments(info) {
       const api =
         `${location.origin}${info.prefix}/_apis/git/repositories/` +
@@ -1947,27 +1975,22 @@
             Date.parse(c.publishedDate) > since
         )
         .sort((a, b) => Date.parse(b.comment.publishedDate) - Date.parse(a.comment.publishedDate))
-        .map(({ thread, comment: c }) => {
-          const ctx = thread.threadContext
-          const line =
-            ctx &&
-            ((ctx.rightFileStart && ctx.rightFileStart.line) ||
-              (ctx.leftFileStart && ctx.leftFileStart.line))
-          return {
-            authorId: c.author.id,
-            // "Core API Build Service (SteffesGroup)" → "Core API Build Service"
-            name: c.author.displayName.replace(/\s*\(.*\)$/, ""),
-            avatarUrl:
-              (c.author._links && c.author._links.avatar && c.author._links.avatar.href) ||
-              c.author.imageUrl,
-            // Service identities (AI review, pipelines) have no email.
-            isPerson: (c.author.uniqueName || "").includes("@"),
-            published: c.publishedDate,
-            file: ctx && ctx.filePath ? `${ctx.filePath}${line ? `:${line}` : ""}` : "",
-            text: plainText(c.content || ""),
-            threadId: thread.id,
-          }
-        })
+        .map(({ thread, comment }) => preview(thread, comment))
+    }
+
+    // Unresolved (active or pending) threads, most recently updated first, each
+    // previewed by its opening comment.
+    async function loadActiveThreads(info) {
+      const threads = await fetchJson(
+        `${location.origin}${info.prefix}/_apis/git/repositories/` +
+          `${info.repo}/pullRequests/${info.prId}/threads?api-version=7.1`
+      )
+      return threads.value
+        .filter((t) => !t.isDeleted && (t.status === "active" || t.status === "pending"))
+        .map((t) => ({ thread: t, texts: (t.comments || []).filter((c) => c.commentType === "text" && !c.isDeleted) }))
+        .filter(({ texts }) => texts.length)
+        .sort((a, b) => Date.parse(b.thread.lastUpdatedDate) - Date.parse(a.thread.lastUpdatedDate))
+        .map(({ thread, texts }) => ({ ...preview(thread, texts[0]), replies: texts.length - 1 }))
     }
 
     // One entry per author, newest first, people ahead of service identities.
@@ -2088,7 +2111,8 @@
         url.searchParams.set("discussionId", c.threadId)
         item.href = url.href
         const meta = el("div", `${CARD_CLASS}-meta`)
-        meta.append(el("span", `${CARD_CLASS}-name`, c.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(c.published)))
+        const replies = c.replies ? ` · ${c.replies} ${c.replies === 1 ? "reply" : "replies"}` : ""
+        meta.append(el("span", `${CARD_CLASS}-name`, c.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(c.published) + replies))
         const body = el("div", `${CARD_CLASS}-body`)
         body.append(meta)
         if (c.file) body.append(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
@@ -2108,7 +2132,7 @@
       if (comments.length > MAX_PREVIEWS) {
         footer.append(el("span", `${CARD_CLASS}-secondary`, `+${comments.length - MAX_PREVIEWS} more`))
       }
-      box.replaceChildren(el("div", `${CARD_CLASS}-title`, "New since your last visit"), ...items, footer)
+      box.replaceChildren(el("div", `${CARD_CLASS}-title`, data.title), ...items, footer)
       box.hidden = false
 
       // Below the cell, right-aligned with it; above it when there's no room.
@@ -2119,15 +2143,22 @@
       box.style.top = `${below + height > innerHeight - 8 ? Math.max(8, rect.top - height - 4) : below}px`
     }
 
-    function bindHover(cell) {
+    // `load`, when given, supplies the cell's card data on each hover (it
+    // caches its own fetches).
+    function bindHover(cell, load) {
       if (hoverBound.has(cell)) return
       hoverBound.add(cell)
       cell.addEventListener("mouseenter", () => {
         clearTimeout(hideTimer)
         clearTimeout(showTimer)
-        showTimer = setTimeout(() => showCard(cell), 250)
+        hovered = cell
+        showTimer = setTimeout(async () => {
+          if (load) cellData.set(cell, await load())
+          if (hovered === cell) showCard(cell)
+        }, 250)
       })
       cell.addEventListener("mouseleave", () => {
+        hovered = null
         clearTimeout(showTimer)
         scheduleHide()
       })
@@ -2188,9 +2219,53 @@
       return null
     }
 
+    // Rows are <a role="row" href=".../pullrequest/N">; keep a fallback for a
+    // title link in case ADO moves the href off the row.
+    function rowPr(cell) {
+      const row = cell.closest('[role="row"]')
+      const link = row && (row.matches("a[href]") ? row : row.querySelector('a[href*="/pullrequest/"]'))
+      const info = link && currentPrInfo(new URL(link.href, location.origin).pathname)
+      return info ? { info, prUrl: link.href } : null
+    }
+
+    function noteCommenters(comments) {
+      comments.forEach((c) => {
+        if (!seenCommenters.has(c.authorId)) seenCommenters.set(c.authorId, { name: c.name, isPerson: c.isPerson })
+      })
+      renderFilterSection()
+    }
+
+    // The comment-count cell ("2 / 3": unresolved / all threads) previews the
+    // unresolved threads on hover; nothing loads until the first hover.
+    function processCommentCounts() {
+      document.querySelectorAll(".repos-pr-list-comment-count.has-active-comments").forEach((count) => {
+        const group = count.closest('[role="group"]') || count
+        const pr = !hoverBound.has(group) && rowPr(group)
+        if (!pr) return
+        bindHover(group, async () => {
+          // Keyed on the count, so a new or resolved thread refetches.
+          const key = `${pr.info.prefix}/${pr.info.repo}/${pr.info.prId}|${count.textContent}`
+          if (!threadsByKey.has(key)) {
+            threadsByKey.set(
+              key,
+              loadActiveThreads(pr.info).catch((e) => {
+                console.error(`[ADO Toolbox] Could not load unresolved threads for PR ${pr.info.prId}:`, e)
+                return null
+              })
+            )
+          }
+          const comments = await threadsByKey.get(key)
+          if (!comments) return null
+          noteCommenters(comments)
+          return { comments, prUrl: pr.prUrl, title: "Unresolved threads" }
+        })
+      })
+    }
+
     function processUpdatesCells() {
       // The menu is created on Feature 4's own schedule; cheap no-op otherwise.
       renderFilterSection()
+      processCommentCounts()
       document.querySelectorAll(".repos-pr-list-updates").forEach((cell) => {
         const textNode = findNewCommentsText(cell)
         // The photos sit beside ADO's text, so they outlive a change to it
@@ -2201,12 +2276,9 @@
           existing.remove()
         }
         if (!textNode) return
-        // Rows are <a role="row" href=".../pullrequest/N">; keep a fallback
-        // for a title link in case ADO moves the href off the row.
-        const row = cell.closest('[role="row"]')
-        const link = row && (row.matches("a[href]") ? row : row.querySelector('a[href*="/pullrequest/"]'))
-        const info = link && currentPrInfo(new URL(link.href, location.origin).pathname)
-        if (!info) return
+        const pr = rowPr(cell)
+        if (!pr) return
+        const { info } = pr
 
         const key = `${info.prefix}/${info.repo}/${info.prId}|${textNode.nodeValue}`
         if (!commentsByKey.has(key)) {
@@ -2220,10 +2292,7 @@
         }
         commentsByKey.get(key).then((comments) => {
           if (!comments) return
-          comments.forEach((c) => {
-            if (!seenCommenters.has(c.authorId)) seenCommenters.set(c.authorId, { name: c.name, isPerson: c.isPerson })
-          })
-          renderFilterSection()
+          noteCommenters(comments)
           const visible = visibleComments(comments)
           // ADO's ellipsis div, inside the first line's flex row.
           const line = textNode.parentElement
@@ -2232,7 +2301,7 @@
           const stack = makeStack(authorsOf(visible))
           stack.dataset.text = textNode.nodeValue
           line.parentElement.insertBefore(stack, line)
-          cellData.set(cell, { comments, prUrl: link.href })
+          cellData.set(cell, { comments, prUrl: pr.prUrl, title: "New since your last visit" })
           bindHover(cell)
         })
       })

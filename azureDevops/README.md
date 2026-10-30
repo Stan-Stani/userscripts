@@ -211,10 +211,15 @@ comment — who, when, which file and line, and the first two lines. Hover a
 preview to read the whole comment in a panel beside the card; click it to jump
 straight to its thread.
 
+**Hover** a comment count with unresolved threads (the orange "2 / 3") for the
+same card listing those threads: each one's opening comment, file and line, and
+how many replies it has.
+
 To drop someone (e.g. **Core API Build Service**), open **Filter PRs** and tick
 them under **Hide comments from**. The list is stored in `localStorage` on the
-Azure DevOps origin, so it survives reloads. **Azure Pipelines Test Service** starts out ticked,
-since it only posts test results; untick it to see those.
+Azure DevOps origin, so it survives reloads, and applies to both cards.
+**Azure Pipelines Test Service** starts out ticked, since it only posts test
+results; untick it to see those.
 
 ---
 
