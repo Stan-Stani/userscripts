@@ -225,6 +225,14 @@ a commit's `Claude-Session:` trailer, labelled with its latest commit. Claude
 Code only writes those links while a session runs with **Remote Control**, and
 they open only for the session's owner.
 
+Optional: a local service on `127.0.0.1:47811` that answers
+`GET /claude-sessions?ids=session_…` with `{ "session_…": { "name": "…" } }`
+labels each row with the session's name from your `claude agents` list instead.
+Your transcripts record the claude.ai id as `"bridgeSessionId":"cse_…"`, so the
+service only has to search for it. The script calls it through
+`GM_xmlhttpRequest` (Tampermonkey asks once to allow `127.0.0.1`); without the
+service nothing changes.
+
 **Resume locally** finds the sessions that never reached claude.ai. Like
 *Work on in Claude*, the first click sets up a URL template, here with `{id}`,
 `{repo}` and `{branch}` (default `hammerspoon://cc-pr?id={id}&branch={branch}`).

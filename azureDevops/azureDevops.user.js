@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-10-30.1
+// @version      2026-10-30.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=visualstudio.com
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
 // @downloadURL  https://raw.githubusercontent.com/Stan-Stani/userscripts/main/azureDevops/azureDevops.user.js
 // @updateURL    https://raw.githubusercontent.com/Stan-Stani/userscripts/main/azureDevops/azureDevops.user.js
 // ==/UserScript==
@@ -2246,6 +2247,9 @@
   // ADO's PR-commits API cuts each message down to its subject, so every
   // commit's full message is fetched once. Commits never change, so the
   // sessions each one links to are cached in localStorage.
+  //
+  // Rows are labelled with each session's latest commit, or with its name on
+  // this machine when a local service supplies one (see localSessionNames).
   // ============================================================
   function createPrClaudeSessions() {
     const SECTION_CLASS = "ado-claude-sessions"
@@ -2254,6 +2258,7 @@
     const CACHE_MAX = 5000
     const FETCH_CONCURRENCY = 4
     const SESSION_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/g
+    const NAMES_URL = "http://127.0.0.1:47811/claude-sessions"
     // "{prefix}/{repo}/{prId}" → Promise of { sessions, branch }
     const loads = new Map()
 
@@ -2348,6 +2353,31 @@
       await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
     }
 
+    // The sessions' names on this machine, { "session_…": { name } }, from an
+    // optional local service that reads Claude Code's transcripts (Stan's
+    // ado-pr-redirector; see README). ADO's CSP keeps the page from calling
+    // localhost, so this goes through GM_xmlhttpRequest. With no service, or no
+    // GM_xmlhttpRequest, it's {} and rows keep their commit labels.
+    function localSessionNames(ids) {
+      if (typeof GM_xmlhttpRequest !== "function" || !ids.length) return Promise.resolve({})
+      return new Promise((resolve) => {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: `${NAMES_URL}?ids=${ids.join(",")}`,
+          timeout: 3000,
+          onload: (r) => {
+            try {
+              resolve(r.status === 200 ? JSON.parse(r.responseText) : {})
+            } catch {
+              resolve({})
+            }
+          },
+          onerror: () => resolve({}),
+          ontimeout: () => resolve({}),
+        })
+      })
+    }
+
     async function loadSessions(info) {
       const api = `${location.origin}${info.prefix}/_apis/git/repositories/${info.repo}`
       const [pr, commits] = await Promise.all([
@@ -2386,6 +2416,8 @@
         }
       })
       sessions.sort((a, b) => Date.parse(b.when) - Date.parse(a.when))
+      const names = await localSessionNames(sessions.map((s) => s.url.split("/").pop()))
+      for (const s of sessions) s.name = names[s.url.split("/").pop()]?.name
       return { sessions, branch: pr.sourceRefName.replace(/^refs\/heads\//, "") }
     }
 
@@ -2408,8 +2440,8 @@
         link.href = s.url
         link.target = "_blank"
         link.rel = "noopener noreferrer"
-        link.textContent = s.label
-        link.title = `${s.label}\n${s.url}\nOpens on claude.ai for the session's owner`
+        link.textContent = s.name || s.label
+        link.title = `${s.name ? `${s.name}\n` : ""}${s.label}\n${s.url}\nOpens on claude.ai for the session's owner`
         const meta = document.createElement("div")
         meta.className = `${SECTION_CLASS}-meta`
         const commitCount = s.commits.length && `${s.commits.length} commit${s.commits.length === 1 ? "" : "s"}`
