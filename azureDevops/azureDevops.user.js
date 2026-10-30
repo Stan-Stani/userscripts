@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-10-28.2
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, and a work-on-in-Claude launcher button.
+// @version      2026-10-30.1
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -27,6 +27,7 @@
  *   7. Work Item Modal     — PR side-panel work items open in an on-page modal, not a navigation
  *   8. Work on in Claude   — button that hands a work item to a launcher on your machine (e.g. cc-wi)
  *   9. PR Dashboard Commenters — commenters' photos + hover previews of new comments on My pull requests
+ *  10. PR Claude Sessions — the PR's claude.ai session links + a resume-locally launcher in its side pane
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -2232,6 +2233,250 @@
   }
 
   // ============================================================
+  // Feature 10: PR Claude Sessions
+  // A "Claude sessions" section in the PR overview's side pane listing the
+  // claude.ai sessions that the PR description and the commits'
+  // "Claude-Session:" trailers link to. Claude Code writes those links only
+  // while a session runs with Remote Control, and they open only for the
+  // session's owner. "Resume locally" covers the rest: a launcher (see
+  // createLauncher) with {id}, {repo} and {branch} for the PR, prefilled with
+  // hammerspoon://cc-pr?id={id}&branch={branch}. azureDevops/cc-pr is the
+  // reference script that finds the PR's local sessions and resumes one.
+  //
+  // ADO's PR-commits API cuts each message down to its subject, so every
+  // commit's full message is fetched once. Commits never change, so the
+  // sessions each one links to are cached in localStorage.
+  // ============================================================
+  function createPrClaudeSessions() {
+    const SECTION_CLASS = "ado-claude-sessions"
+    const CACHE_KEY = "ado-claude-session-commits"
+    // Commit id → linked sessions, ~60 bytes each; the oldest go first.
+    const CACHE_MAX = 5000
+    const FETCH_CONCURRENCY = 4
+    const SESSION_RE = /https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/g
+    // "{prefix}/{repo}/{prId}" → Promise of { sessions, branch }
+    const loads = new Map()
+
+    const STYLES = `
+      .${SECTION_CLASS}-head {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .${SECTION_CLASS}-head .bolt-header-title { flex-grow: 1; }
+      .${SECTION_CLASS}-resume {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: transparent;
+        border: none;
+        border-radius: 3px;
+        padding: 2px 6px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+        color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
+      }
+      .${SECTION_CLASS}-resume:hover, .${SECTION_CLASS}-resume.ado-launcher-open {
+        background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06));
+        color: var(--text-primary-color, rgba(0, 0, 0, 0.9));
+      }
+      .${SECTION_CLASS}-resume.ado-launcher-sent { color: #107c10; }
+      .${SECTION_CLASS}-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .${SECTION_CLASS}-list li + li { margin-top: 8px; }
+      .${SECTION_CLASS}-list a {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--communication-foreground, #0078d4);
+        text-decoration: none;
+      }
+      .${SECTION_CLASS}-list a:hover { text-decoration: underline; }
+      .${SECTION_CLASS}-meta, .${SECTION_CLASS}-note {
+        font-size: 12px;
+        color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
+      }
+    `
+
+    const launcher = createLauncher({
+      storageKey: "ado-claude-pr-launch-url",
+      defaultTemplate: "hammerspoon://cc-pr?id={id}&branch={branch}",
+      heading: "Resume this PR's Claude Code session",
+      hint: (btn) => `
+        Opens a URL on your machine with <code>{id}</code>, <code>{repo}</code> and
+        <code>{branch}</code> filled in for this pull request (here <code>${btn.dataset.prId}</code>),
+        so a script there can find the Claude Code sessions that worked on it and resume one
+        (see <code>azureDevops/cc-pr</code> in the Toolbox repo). Stored in this browser only.`,
+      fill: (template, btn) =>
+        template
+          .replaceAll("{id}", encodeURIComponent(btn.dataset.prId))
+          .replaceAll("{repo}", encodeURIComponent(btn.dataset.repo))
+          .replaceAll("{branch}", encodeURIComponent(btn.dataset.branch)),
+      tooltip: (btn, configured) =>
+        `Resume a local Claude Code session on PR ${btn.dataset.prId}\n` +
+        (configured ? "(Right-click to change the launcher)" : "(Click to set up the launcher)"),
+    })
+
+    function readCache() {
+      try {
+        return JSON.parse(localStorage.getItem(CACHE_KEY)) || {}
+      } catch {
+        return {}
+      }
+    }
+
+    function writeCache(cache) {
+      const ids = Object.keys(cache)
+      ids.slice(0, Math.max(0, ids.length - CACHE_MAX)).forEach((id) => delete cache[id])
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify(cache))
+      } catch {
+        // full or blocked storage: the next visit fetches again
+      }
+    }
+
+    async function forEachLimited(items, limit, fn) {
+      let next = 0
+      const worker = async () => {
+        while (next < items.length) await fn(items[next++])
+      }
+      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+    }
+
+    async function loadSessions(info) {
+      const api = `${location.origin}${info.prefix}/_apis/git/repositories/${info.repo}`
+      const [pr, commits] = await Promise.all([
+        fetchJson(`${api}/pullRequests/${info.prId}?api-version=7.1`),
+        fetchJson(`${api}/pullRequests/${info.prId}/commits?$top=500&api-version=7.1`),
+      ])
+      const cache = readCache()
+      try {
+        await forEachLimited(
+          commits.value.filter((c) => !cache[c.commitId]),
+          FETCH_CONCURRENCY,
+          async (c) => {
+            const full = await fetchJson(`${api}/commits/${c.commitId}?api-version=7.1`)
+            cache[c.commitId] = [...new Set(full.comment.match(SESSION_RE))]
+          }
+        )
+      } finally {
+        writeCache(cache)
+      }
+
+      const byUrl = new Map()
+      const session = (url) =>
+        byUrl.get(url) ?? byUrl.set(url, { url, commits: [], wrotePr: false }).get(url)
+      for (const url of (pr.description || "").match(SESSION_RE) || []) session(url).wrotePr = true
+      for (const c of commits.value) for (const url of cache[c.commitId] || []) session(url).commits.push(c)
+
+      const sessions = [...byUrl.values()].map((s) => {
+        const latest = s.commits.reduce(
+          (a, c) => (!a || Date.parse(c.author.date) > Date.parse(a.author.date) ? c : a),
+          null
+        )
+        return {
+          ...s,
+          label: latest ? latest.comment.split("\n")[0] : pr.title,
+          when: latest ? latest.author.date : pr.creationDate,
+        }
+      })
+      sessions.sort((a, b) => Date.parse(b.when) - Date.parse(a.when))
+      return { sessions, branch: pr.sourceRefName.replace(/^refs\/heads\//, "") }
+    }
+
+    function note(text) {
+      const node = document.createElement("div")
+      node.className = `${SECTION_CLASS}-note`
+      node.textContent = text
+      return node
+    }
+
+    function renderSessions(body, sessions) {
+      if (!sessions.length) {
+        body.replaceChildren(note("None linked. Sessions show up here when Claude Code commits with Remote Control on."))
+        return
+      }
+      const list = document.createElement("ul")
+      list.className = `${SECTION_CLASS}-list`
+      for (const s of sessions) {
+        const link = document.createElement("a")
+        link.href = s.url
+        link.target = "_blank"
+        link.rel = "noopener noreferrer"
+        link.textContent = s.label
+        link.title = `${s.label}\n${s.url}\nOpens on claude.ai for the session's owner`
+        const meta = document.createElement("div")
+        meta.className = `${SECTION_CLASS}-meta`
+        const commitCount = s.commits.length && `${s.commits.length} commit${s.commits.length === 1 ? "" : "s"}`
+        meta.textContent = [s.wrotePr && "PR description", commitCount, timeAgo(s.when)].filter(Boolean).join(" · ")
+        const item = document.createElement("li")
+        item.append(link, meta)
+        list.append(item)
+      }
+      body.replaceChildren(list)
+    }
+
+    function processOverview() {
+      // Only the Overview tab has the side pane.
+      const pane = document.querySelector(".repos-overview-right-pane")
+      const info = pane && currentPrInfo()
+      if (!info) return
+      const key = `${info.prefix}/${info.repo}/${info.prId}`
+      const existing = pane.querySelector(`.${SECTION_CLASS}`)
+      if (existing && existing.dataset.pr === key) return
+      existing?.remove()
+
+      const section = document.createElement("div")
+      section.className = `${SECTION_CLASS} flex-column rhythm-vertical-8`
+      section.dataset.pr = key
+      section.innerHTML = `
+        <div class="${SECTION_CLASS}-head">
+          <div aria-level="2" class="bolt-header-title body-xl m" role="heading">Claude sessions</div>
+        </div>
+        <div class="${SECTION_CLASS}-body"></div>
+      `
+      const body = section.querySelector(`.${SECTION_CLASS}-body`)
+      body.append(note("Loading…"))
+      const btn = document.createElement("button")
+      btn.type = "button"
+      btn.className = `${SECTION_CLASS}-resume`
+      btn.dataset.prId = info.prId
+      btn.dataset.repo = decodeURIComponent(info.repo)
+      btn.dataset.branch = ""
+      launcher.attach(btn, "Resume locally")
+      section.querySelector(`.${SECTION_CLASS}-head`).append(btn)
+      pane.append(section)
+
+      if (!loads.has(key)) loads.set(key, loadSessions(info))
+      loads.get(key).then(
+        ({ sessions, branch }) => {
+          btn.dataset.branch = branch
+          launcher.refresh(btn)
+          renderSessions(body, sessions)
+        },
+        (e) => {
+          console.error(`[ADO Toolbox] Could not load Claude sessions for PR ${info.prId}:`, e)
+          // Retry on the next visit to the overview.
+          loads.delete(key)
+          body.replaceChildren(note("Couldn't load sessions."))
+        }
+      )
+    }
+
+    return {
+      name: "PR Claude Sessions",
+      match: (url) => url.includes("/pullrequest/"),
+      init() { injectStyle(STYLES) },
+      process: processOverview,
+    }
+  }
+
+  // ============================================================
   // Controller
   // ============================================================
   const FEATURES = [
@@ -2244,6 +2489,7 @@
     createWorkItemModal(),
     createWorkOnInClaude(),
     createPrDashboardCommenters(),
+    createPrClaudeSessions(),
   ]
 
   function runFeature(f) {

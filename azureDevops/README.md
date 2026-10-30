@@ -4,7 +4,7 @@ A single userscript for the whole team that adds quality-of-life helpers to
 Azure DevOps pull requests and work items. Install once; it auto-updates from
 this repo.
 
-It bundles nine features, each isolated so a failure in one can't break the
+It bundles ten features, each isolated so a failure in one can't break the
 others.
 
 > The screenshots below use placeholder data — paths, work items, and branch
@@ -214,3 +214,39 @@ straight to its thread.
 To drop someone (e.g. **Core API Build Service**), open **Filter PRs** and tick
 them under **Hide comments from**. The list is stored in `localStorage` on the
 Azure DevOps origin, so it survives reloads.
+
+---
+
+## 10. PR Claude Sessions
+
+A **Claude sessions** section in the PR overview's side pane links the
+claude.ai sessions behind the PR: any session named in the description or in
+a commit's `Claude-Session:` trailer, labelled with its latest commit. Claude
+Code only writes those links while a session runs with **Remote Control**, and
+they open only for the session's owner.
+
+**Resume locally** finds the sessions that never reached claude.ai. Like
+*Work on in Claude*, the first click sets up a URL template, here with `{id}`,
+`{repo}` and `{branch}` (default `hammerspoon://cc-pr?id={id}&branch={branch}`).
+
+[`cc-pr`](cc-pr) is the reference handler: `cc-pr <pr-id> [branch]` searches
+every `~/.claude*/projects` transcript for the PR's URL, number or branch in
+prompts and Claude's own messages, then resumes the pick (or `claude attach`es
+a background session). macOS, needs `rg`, `jq` and `fzf`; set `CC_PR_CLAUDE`
+to resume with extra flags. Hammerspoon route:
+
+```lua
+-- ~/.hammerspoon/init.lua
+hs.urlevent.bind("cc-pr", function(_, params)
+  local id, branch = params.id or "", params.branch or ""
+  if not id:match("^%d+$") then return end   -- only safe values reach the shell
+  if not branch:match("^[%w%._/][%w%._/%-]*$") then branch = "" end
+  hs.osascript.applescript(string.format([[
+    tell application "iTerm"
+      activate
+      set w to (create window with default profile)
+      tell current session of w to write text "cc-pr %s %s"
+    end tell
+  ]], id, branch))
+end)
+```

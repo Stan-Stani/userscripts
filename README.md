@@ -3,7 +3,7 @@
 ## Azure DevOps Toolbox — `azureDevops/azureDevops.user.js`
 
 One script for the whole team. Install it once in Tampermonkey/Violentmonkey and
-it auto-updates from this repo. It bundles five features, each isolated so a
+it auto-updates from this repo. It bundles ten features, each isolated so a
 failure in one can't break the others:
 
 1. **PR File Path Tools** — copy buttons + full-path tooltips on PR file headers,
@@ -21,6 +21,10 @@ failure in one can't break the others:
    you're editing, matching the PR comment editor.
 7. **Work Item Modal** — work items in a PR's side panel open in an on-page
    modal instead of navigating away.
+8. **Work on in Claude** — hand a work item to a launcher on your machine.
+9. **PR Dashboard Commenters** — who left new comments, with hover previews.
+10. **PR Claude Sessions** — the PR's claude.ai session links, plus a
+    launcher that resumes its local Claude Code sessions.
 
 ![Copy button on a PR file header](azureDevops/docs/file-path-copy.png)
 
