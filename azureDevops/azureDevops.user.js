@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-10-30.2
+// @version      2026-10-30.3
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1721,6 +1721,12 @@
     const MAX_AVATARS = 3
     const MAX_PREVIEWS = 5
     const HIDDEN_KEY = "ado-pr-hidden-commenters"
+    // Hidden until unticked: Azure Pipelines Test Service only posts test-run
+    // results. Added to the hidden list once per browser (DEFAULTS_KEY records
+    // which version of this list was applied), so unticking it sticks.
+    const DEFAULT_HIDDEN = [{ id: "00000054-0000-8888-8000-000000000000", name: "Azure Pipelines Test Service" }]
+    const DEFAULTS_KEY = "ado-pr-hidden-commenters-defaults"
+    const DEFAULTS_VERSION = "1"
     const SECTION_CLASS = "ado-pr-commenter-filters"
     // "{PR path}|{updates text}" → Promise of new comments (newest first) or
     // null. Keying on the text refetches once ADO reports more comments.
@@ -1872,6 +1878,13 @@
     }
     function saveHidden(list) {
       localStorage.setItem(HIDDEN_KEY, JSON.stringify(list))
+    }
+    function applyDefaultHidden() {
+      if (localStorage.getItem(DEFAULTS_KEY) === DEFAULTS_VERSION) return
+      const list = getHidden()
+      DEFAULT_HIDDEN.forEach((d) => list.some((h) => h.id === d.id) || list.push(d))
+      saveHidden(list)
+      localStorage.setItem(DEFAULTS_KEY, DEFAULTS_VERSION)
     }
     function visibleComments(comments) {
       const hiddenIds = new Set(getHidden().map((h) => h.id))
@@ -2228,7 +2241,10 @@
     return {
       name: "PR Dashboard Commenters",
       match: (url) => new URL(url).pathname.endsWith("/_pulls"),
-      init() { injectStyle(STYLES) },
+      init() {
+        injectStyle(STYLES)
+        applyDefaultHidden()
+      },
       process: processUpdatesCells,
     }
   }
