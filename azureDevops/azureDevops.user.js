@@ -69,6 +69,267 @@
     return { prefix, repo, prId: m[1] }
   }
 
+  async function fetchJson(url, body) {
+    const response = await fetch(url, {
+      method: body ? "POST" : "GET",
+      credentials: "include",
+      headers: body
+        ? { Accept: "application/json", "Content-Type": "application/json" }
+        : { Accept: "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    if (!response.ok) throw new Error(`${response.status} from ${url}`)
+    return response.json()
+  }
+
+  function timeAgo(iso) {
+    const minutes = Math.floor((Date.now() - Date.parse(iso)) / 60000)
+    if (minutes < 1) return "just now"
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    return days < 7 ? `${days}d ago` : new Date(iso).toLocaleDateString()
+  }
+
+  // ">_" prompt glyph
+  const TERMINAL_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>
+    <path d="M4.5 6l2.5 2-2.5 2M8.5 10.5h3"/>
+  </svg>`
+
+  // A launcher button hands something to a program on the user's own machine.
+  // The launcher is a per-browser URL template whose placeholders `fill`
+  // replaces; clicking navigates to the result, so the OS opens whatever
+  // handles that scheme. Nothing is stored until the user confirms: with no
+  // template saved, a click opens a setup popover prefilled with
+  // `defaultTemplate` and "Save & open"; right-click reopens it to change or
+  // clear the template. The button gets the ">_" icon (a check mark flashes
+  // on launch) plus an optional label, and the classes ado-launcher-open
+  // (popover showing) and ado-launcher-sent (just launched) for styling.
+  const LAUNCHER_STYLES = `
+    .ado-launcher-icon { display: inline-flex; }
+    .ado-launcher-popover {
+      position: fixed;
+      z-index: 99999;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+      padding: 10px 12px;
+      width: 400px;
+      font-size: 12px;
+      font-family: inherit;
+      color: #333;
+    }
+    .ado-launcher-pop-title {
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .ado-launcher-pop-hint {
+      color: #666;
+      margin-bottom: 8px;
+    }
+    .ado-launcher-pop-hint code {
+      font-family: monospace;
+      font-size: 11px;
+    }
+    .ado-launcher-pop-input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      padding: 4px 6px;
+      font-size: 11px;
+      font-family: monospace;
+      margin-bottom: 8px;
+    }
+    .ado-launcher-pop-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ado-launcher-pop-actions button {
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #f5f5f5;
+      padding: 3px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .ado-launcher-pop-actions button:hover { background: #e8e8e8; }
+    .ado-launcher-pop-save {
+      background: #0078d4 !important;
+      border-color: #0078d4 !important;
+      color: #fff;
+    }
+    .ado-launcher-pop-save:hover { background: #106ebe !important; }
+    .ado-launcher-pop-clear {
+      margin-left: auto;
+      border: none !important;
+      background: none !important;
+      color: #a4262c;
+    }
+  `
+  let launcherStylesInjected = false
+
+  //   storageKey       localStorage key holding the template
+  //   defaultTemplate  the setup popover's prefill
+  //   heading          the popover's title
+  //   hint(btn)        the popover's explanation (HTML)
+  //   fill(template, btn) → the URL to open, or null when the button can't launch
+  //   tooltip(btn, configured) → the button's title
+  function createLauncher({ storageKey, defaultTemplate, heading, hint, fill, tooltip }) {
+    function template() {
+      return localStorage.getItem(storageKey) || ""
+    }
+
+    function buildUrl(btn) {
+      const current = template()
+      return current ? fill(current, btn) : null
+    }
+
+    // Call again whenever something `fill` reads from the button changes.
+    function refresh(btn) {
+      const url = buildUrl(btn)
+      if (url) btn.dataset.launchUrl = url
+      else delete btn.dataset.launchUrl
+      btn.title = tooltip(btn, Boolean(url))
+    }
+
+    function launch(btn) {
+      const url = buildUrl(btn)
+      if (!url) return
+      // Navigating to a custom scheme hands off to the OS; the page stays put.
+      // Inside the Work Item Modal's iframe, navigate the top window instead so
+      // the browser's "open external app?" prompt shows where the user is looking.
+      let target = window
+      try {
+        if (window.top && window.top.location.origin === location.origin) target = window.top
+      } catch {
+        // cross-origin parent: fall back to this frame
+      }
+      target.location.href = url
+      const icon = btn.querySelector(".ado-launcher-icon")
+      btn.classList.add("ado-launcher-sent")
+      icon.innerHTML = CHECK_ICON
+      setTimeout(() => {
+        btn.classList.remove("ado-launcher-sent")
+        icon.innerHTML = TERMINAL_ICON
+      }, 1500)
+    }
+
+    // --- Setup popover (first click, or right-click to change) ---
+    let activePopover = null
+    let popoverBtn = null
+
+    function closePopover() {
+      activePopover?.remove()
+      activePopover = null
+      popoverBtn?.classList.remove("ado-launcher-open")
+      popoverBtn = null
+      document.removeEventListener("mousedown", onOutsideClick, true)
+      document.removeEventListener("keydown", onEscape, true)
+    }
+
+    function onOutsideClick(e) {
+      if (activePopover && !activePopover.contains(e.target) && !popoverBtn?.contains(e.target)) closePopover()
+    }
+
+    function onEscape(e) {
+      if (e.key === "Escape") { e.stopPropagation(); closePopover() }
+    }
+
+    function showPopover(btn) {
+      closePopover()
+      const current = template()
+
+      const pop = document.createElement("div")
+      pop.className = "ado-launcher-popover"
+      pop.innerHTML = `
+        <div class="ado-launcher-pop-title">${heading}</div>
+        <div class="ado-launcher-pop-hint">${hint(btn)}</div>
+        <input class="ado-launcher-pop-input" type="text" spellcheck="false" />
+        <div class="ado-launcher-pop-actions">
+          <button type="button" class="ado-launcher-pop-save">Save &amp; open</button>
+          <button type="button" class="ado-launcher-pop-cancel">Not now</button>
+          ${current ? `<button type="button" class="ado-launcher-pop-clear" title="Forget the launcher; the button will ask again">Clear</button>` : ""}
+        </div>
+      `
+      const input = pop.querySelector(".ado-launcher-pop-input")
+      input.value = current || defaultTemplate
+
+      function save() {
+        const val = input.value.trim()
+        if (!val) return
+        localStorage.setItem(storageKey, val)
+        refresh(btn)
+        closePopover()
+        launch(btn)
+      }
+      pop.querySelector(".ado-launcher-pop-save").addEventListener("click", save)
+      pop.querySelector(".ado-launcher-pop-cancel").addEventListener("click", closePopover)
+      pop.querySelector(".ado-launcher-pop-clear")?.addEventListener("click", () => {
+        localStorage.removeItem(storageKey)
+        refresh(btn)
+        closePopover()
+      })
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") save() })
+
+      // Work item dialogs (taskboard, backlog) render in a portal stacked above
+      // anything on <body>, so a popover there would open hidden behind the
+      // dialog. Mount it inside the dialog instead; position: fixed keeps it
+      // from being clipped by the dialog's scroll container.
+      const host = btn.closest('[role="dialog"]') ?? document.body
+      host.appendChild(pop)
+      activePopover = pop
+      popoverBtn = btn
+      btn.classList.add("ado-launcher-open")
+
+      // Below the button, flipped left if it would overflow the viewport
+      const rect = btn.getBoundingClientRect()
+      pop.style.top = `${rect.bottom + 4}px`
+      pop.style.left = `${rect.left}px`
+      requestAnimationFrame(() => {
+        const popRect = pop.getBoundingClientRect()
+        if (popRect.right > window.innerWidth - 8) {
+          pop.style.left = `${rect.right - popRect.width}px`
+        }
+      })
+
+      setTimeout(() => {
+        document.addEventListener("mousedown", onOutsideClick, true)
+        document.addEventListener("keydown", onEscape, true)
+      }, 0)
+      input.select()
+    }
+
+    // Fills `btn` with the icon (and `label`) and wires it up.
+    function attach(btn, label = "") {
+      if (!launcherStylesInjected) {
+        launcherStylesInjected = true
+        injectStyle(LAUNCHER_STYLES)
+      }
+      btn.innerHTML = `<span class="ado-launcher-icon">${TERMINAL_ICON}</span>`
+      if (label) btn.append(label)
+      refresh(btn)
+      btn.addEventListener("click", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        if (template()) launch(btn)
+        else showPopover(btn)
+      })
+      btn.addEventListener("contextmenu", (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        showPopover(btn)
+      })
+    }
+
+    return { attach, refresh }
+  }
+
   // ============================================================
   // Feature 1: PR File Path Tools
   // Show full file path on hover and add copy-to-clipboard buttons for file
@@ -1342,27 +1603,16 @@
 
   // ============================================================
   // Feature 8: Work on in Claude
-  //   A ">_" button beside the work item title that hands the item to a launcher
-  //   on the user's own machine. The launcher is a per-browser URL template with
-  //   `{id}` standing in for the work item id; clicking navigates to the result,
-  //   so the OS opens whatever handles that scheme. Nothing is stored until the
-  //   user confirms: the first click opens a small setup popover prefilled with
-  //   the default (hammerspoon://cc-wi?id={id}) and "Save & open"; right-click
-  //   reopens it to change or clear the template. Reference setup (macOS):
-  //   Hammerspoon binds hammerspoon://cc-wi and opens an iTerm2 window running
-  //   `cc-wi <id>`, which starts a Claude Code session with the item's context
+  //   A ">_" button beside the work item title that hands the item to a
+  //   launcher on the user's own machine (see createLauncher), with `{id}`
+  //   standing in for the work item id. The setup popover is prefilled with
+  //   hammerspoon://cc-wi?id={id}. Reference setup (macOS): Hammerspoon binds
+  //   hammerspoon://cc-wi and opens an iTerm2 window running `cc-wi <id>`, which
+  //   starts a Claude Code session with the item's context
   //   (~/.hammerspoon/ccwi.lua on Stan's machine; see README).
   // ============================================================
   function createWorkOnInClaude() {
     const PROCESSED_ATTR = "data-ccwi-processed"
-    const URL_KEY = "ado-claude-launch-url"
-    const DEFAULT_TEMPLATE = "hammerspoon://cc-wi?id={id}"
-
-    // ">_" prompt glyph
-    const TERMINAL_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>
-      <path d="M4.5 6l2.5 2-2.5 2M8.5 10.5h3"/>
-    </svg>`
 
     const STYLES = `
       .ado-ccwi-btn {
@@ -1383,212 +1633,34 @@
       .work-item-title-textfield:hover .ado-ccwi-btn {
         opacity: 0.45;
       }
-      .ado-ccwi-btn:hover, .ado-ccwi-btn.ado-ccwi-open {
+      .ado-ccwi-btn:hover, .ado-ccwi-btn.ado-launcher-open {
         opacity: 1 !important;
         background: rgba(0,0,0,0.08);
       }
-      .ado-ccwi-btn.ado-ccwi-sent {
+      .ado-ccwi-btn.ado-launcher-sent {
         opacity: 1 !important;
         color: #107c10;
       }
-      .ado-ccwi-popover {
-        position: fixed;
-        z-index: 99999;
-        background: #fff;
-        border: 1px solid #ccc;
-        border-radius: 6px;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.18);
-        padding: 10px 12px;
-        width: 400px;
-        font-size: 12px;
-        font-family: inherit;
-        color: #333;
-      }
-      .ado-ccwi-pop-title {
-        font-weight: 600;
-        font-size: 13px;
-        margin-bottom: 6px;
-      }
-      .ado-ccwi-pop-hint {
-        color: #666;
-        margin-bottom: 8px;
-      }
-      .ado-ccwi-pop-hint code {
-        font-family: monospace;
-        font-size: 11px;
-      }
-      .ado-ccwi-pop-input {
-        width: 100%;
-        box-sizing: border-box;
-        border: 1px solid #ccc;
-        border-radius: 3px;
-        padding: 4px 6px;
-        font-size: 11px;
-        font-family: monospace;
-        margin-bottom: 8px;
-      }
-      .ado-ccwi-pop-actions {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .ado-ccwi-pop-actions button {
-        border: 1px solid #ccc;
-        border-radius: 3px;
-        background: #f5f5f5;
-        padding: 3px 10px;
-        font-size: 12px;
-        cursor: pointer;
-      }
-      .ado-ccwi-pop-actions button:hover { background: #e8e8e8; }
-      .ado-ccwi-pop-save {
-        background: #0078d4 !important;
-        border-color: #0078d4 !important;
-        color: #fff;
-      }
-      .ado-ccwi-pop-save:hover { background: #106ebe !important; }
-      .ado-ccwi-pop-clear {
-        margin-left: auto;
-        border: none !important;
-        background: none !important;
-        color: #a4262c;
-      }
     `
 
-    function launchUrlTemplate() {
-      return localStorage.getItem(URL_KEY) || ""
-    }
-
-    function buildLaunchUrl(id) {
-      const template = launchUrlTemplate()
-      if (!template || !/^\d+$/.test(id)) return null
-      return template.replace("{id}", id)
-    }
+    const launcher = createLauncher({
+      storageKey: "ado-claude-launch-url",
+      defaultTemplate: "hammerspoon://cc-wi?id={id}",
+      heading: "Work on this item in Claude Code",
+      hint: (btn) => `
+        Opens a URL on your machine with <code>{id}</code> replaced by the work item id
+        (here <code>${btn.dataset.workItemId}</code>), so your OS can start a terminal or editor on it.
+        Stored in this browser only.`,
+      fill: (template, btn) =>
+        /^\d+$/.test(btn.dataset.workItemId) ? template.replace("{id}", btn.dataset.workItemId) : null,
+      tooltip: (btn, configured) =>
+        `Work on #${btn.dataset.workItemId} in Claude Code\n` +
+        (configured ? "(Right-click to change the launcher)" : "(Click to set up the launcher)"),
+    })
 
     function currentWorkItemId() {
       const pathMatch = window.location.pathname.match(/_workitems\/edit\/(\d+)/)
       return pathMatch?.[1] ?? new URLSearchParams(window.location.search).get("workitem")
-    }
-
-    function refreshBtn(btn) {
-      const id = btn.dataset.workItemId
-      const url = buildLaunchUrl(id)
-      if (url) btn.dataset.launchUrl = url
-      else delete btn.dataset.launchUrl
-      btn.title = url
-        ? `Work on #${id} in Claude Code\n(Right-click to change the launcher)`
-        : `Work on #${id} in Claude Code\n(Click to set up the launcher)`
-    }
-
-    function launch(btn) {
-      const url = buildLaunchUrl(btn.dataset.workItemId)
-      if (!url) return
-      // Navigating to a custom scheme hands off to the OS; the page stays put.
-      // Inside the Work Item Modal's iframe, navigate the top window instead so
-      // the browser's "open external app?" prompt shows where the user is looking.
-      let target = window
-      try {
-        if (window.top && window.top.location.origin === location.origin) target = window.top
-      } catch {
-        // cross-origin parent: fall back to this frame
-      }
-      target.location.href = url
-      btn.classList.add("ado-ccwi-sent")
-      btn.innerHTML = CHECK_ICON
-      setTimeout(() => {
-        btn.classList.remove("ado-ccwi-sent")
-        btn.innerHTML = TERMINAL_ICON
-      }, 1500)
-    }
-
-    // --- Setup popover (first click, or right-click to change) ---
-    let activePopover = null
-    let popoverBtn = null
-
-    function closePopover() {
-      activePopover?.remove()
-      activePopover = null
-      popoverBtn?.classList.remove("ado-ccwi-open")
-      popoverBtn = null
-      document.removeEventListener("mousedown", onOutsideClick, true)
-      document.removeEventListener("keydown", onEscape, true)
-    }
-
-    function onOutsideClick(e) {
-      if (activePopover && !activePopover.contains(e.target) && e.target !== popoverBtn) closePopover()
-    }
-
-    function onEscape(e) {
-      if (e.key === "Escape") { e.stopPropagation(); closePopover() }
-    }
-
-    function showPopover(btn) {
-      closePopover()
-      const current = launchUrlTemplate()
-      const id = btn.dataset.workItemId
-
-      const pop = document.createElement("div")
-      pop.className = "ado-ccwi-popover"
-      pop.innerHTML = `
-        <div class="ado-ccwi-pop-title">Work on this item in Claude Code</div>
-        <div class="ado-ccwi-pop-hint">
-          Opens a URL on your machine with <code>{id}</code> replaced by the work item id
-          (here <code>${id}</code>), so your OS can start a terminal or editor on it.
-          Stored in this browser only.
-        </div>
-        <input class="ado-ccwi-pop-input" type="text" spellcheck="false" />
-        <div class="ado-ccwi-pop-actions">
-          <button type="button" class="ado-ccwi-pop-save">Save &amp; open</button>
-          <button type="button" class="ado-ccwi-pop-cancel">Not now</button>
-          ${current ? `<button type="button" class="ado-ccwi-pop-clear" title="Forget the launcher; the button will ask again">Clear</button>` : ""}
-        </div>
-      `
-      const input = pop.querySelector(".ado-ccwi-pop-input")
-      input.value = current || DEFAULT_TEMPLATE
-
-      function save() {
-        const val = input.value.trim()
-        if (!val) return
-        localStorage.setItem(URL_KEY, val)
-        refreshBtn(btn)
-        closePopover()
-        launch(btn)
-      }
-      pop.querySelector(".ado-ccwi-pop-save").addEventListener("click", save)
-      pop.querySelector(".ado-ccwi-pop-cancel").addEventListener("click", closePopover)
-      pop.querySelector(".ado-ccwi-pop-clear")?.addEventListener("click", () => {
-        localStorage.removeItem(URL_KEY)
-        refreshBtn(btn)
-        closePopover()
-      })
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") save() })
-
-      // Work item dialogs (taskboard, backlog) render in a portal stacked above
-      // anything on <body>, so a popover there would open hidden behind the
-      // dialog. Mount it inside the dialog instead; position: fixed keeps it
-      // from being clipped by the dialog's scroll container.
-      const host = btn.closest('[role="dialog"]') ?? document.body
-      host.appendChild(pop)
-      activePopover = pop
-      popoverBtn = btn
-      btn.classList.add("ado-ccwi-open")
-
-      // Below the button, flipped left if it would overflow the viewport
-      const rect = btn.getBoundingClientRect()
-      pop.style.top = `${rect.bottom + 4}px`
-      pop.style.left = `${rect.left}px`
-      requestAnimationFrame(() => {
-        const popRect = pop.getBoundingClientRect()
-        if (popRect.right > window.innerWidth - 8) {
-          pop.style.left = `${rect.right - popRect.width}px`
-        }
-      })
-
-      setTimeout(() => {
-        document.addEventListener("mousedown", onOutsideClick, true)
-        document.addEventListener("keydown", onEscape, true)
-      }, 0)
-      input.select()
     }
 
     function processWorkItemPage() {
@@ -1604,19 +1676,7 @@
       btn.className = "ado-ccwi-btn"
       btn.type = "button"
       btn.dataset.workItemId = id
-      btn.innerHTML = TERMINAL_ICON
-      refreshBtn(btn)
-      btn.addEventListener("click", (e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        if (launchUrlTemplate()) launch(btn)
-        else showPopover(btn)
-      })
-      btn.addEventListener("contextmenu", (e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        showPopover(btn)
-      })
+      launcher.attach(btn)
       // After the Branch Name copy button, which the earlier feature appends to
       // the same container.
       titleContainer.appendChild(btn)
@@ -1823,19 +1883,6 @@
         : location.origin
     }
 
-    async function fetchJson(url, body) {
-      const response = await fetch(url, {
-        method: body ? "POST" : "GET",
-        credentials: "include",
-        headers: body
-          ? { Accept: "application/json", "Content-Type": "application/json" }
-          : { Accept: "application/json" },
-        body: body ? JSON.stringify(body) : undefined,
-      })
-      if (!response.ok) throw new Error(`${response.status} from ${url}`)
-      return response.json()
-    }
-
     // Markdown reduced to readable plain text (always shown as text, never
     // HTML). The card's two-line preview collapses the line breaks; the full
     // comment panel keeps them.
@@ -1913,16 +1960,6 @@
       const byId = new Map()
       comments.forEach((c) => byId.has(c.authorId) || byId.set(c.authorId, c))
       return [...byId.values()].sort((a, b) => b.isPerson - a.isPerson)
-    }
-
-    function timeAgo(iso) {
-      const minutes = Math.floor((Date.now() - Date.parse(iso)) / 60000)
-      if (minutes < 1) return "just now"
-      if (minutes < 60) return `${minutes}m ago`
-      const hours = Math.floor(minutes / 60)
-      if (hours < 24) return `${hours}h ago`
-      const days = Math.floor(hours / 24)
-      return days < 7 ? `${days}d ago` : new Date(iso).toLocaleDateString()
     }
 
     function el(tag, className, text) {
