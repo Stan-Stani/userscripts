@@ -232,8 +232,11 @@ they open only for the session's owner.
 [`cc-pr`](cc-pr) is the reference handler: `cc-pr <pr-id> [branch]` searches
 every `~/.claude*/projects` transcript for the PR's URL, number or branch in
 prompts and Claude's own messages, then resumes the pick (or `claude attach`es
-a background session). macOS, needs `rg`, `jq` and `fzf`; set `CC_PR_CLAUDE`
-to resume with extra flags. Hammerspoon route:
+a background session). `--bg` makes the pick a background agent and attaches to
+it; `--list` and `--open <transcript>` let another picker drive it, e.g. a
+Hammerspoon chooser that opens the pick in a `claude agents` pane. macOS, needs
+`rg`, `jq` and `fzf`; set `CC_PR_CLAUDE` to resume with extra flags. Simplest
+Hammerspoon route:
 
 ```lua
 -- ~/.hammerspoon/init.lua

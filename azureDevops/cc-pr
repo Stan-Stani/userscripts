@@ -3,7 +3,15 @@
 # request and resume one. The Toolbox's "Resume locally" button hands the PR to it
 # through a URL handler (see README); it also runs by hand:
 #
-#   cc-pr <pr-id> [source-branch]
+#   cc-pr [--bg] <pr-id> [source-branch]   pick a session (fzf) and resume it here
+#   cc-pr [--bg] --open <transcript>       resume that session here
+#   cc-pr --list <pr-id> [source-branch]   print the matches for another picker:
+#                                          transcript, title, cwd, mtime, live (tab-separated)
+#
+# --bg makes the session a background agent (`claude agents` lists it) and attaches
+# this terminal to it, instead of a plain `claude --resume`. A session that is already
+# running in the background is attached either way; one open in another terminal is
+# left alone.
 #
 # A session counts when Claude's own messages or the user's prompts mention the PR
 # (its URL, "PR 123", "!123", pullRequests/123) or its source branch. Tool output,
@@ -13,94 +21,148 @@
 #
 # Env:
 #   CC_PR_PROJECTS  colon-separated transcript dirs (default: every ~/.claude*/projects)
-#   CC_PR_CLAUDE    resume command (default: claude), e.g.
+#   CC_PR_CLAUDE    command that resumes (default: claude), e.g.
 #                   "claude --dangerously-skip-permissions"
 set -euo pipefail
 
 usage() {
-  echo "usage: cc-pr <pr-id> [source-branch]" >&2
+  sed -n '6,9p' "$0" | sed 's/^#   //' >&2
   exit 2
 }
 
-# --preview <transcript>: fzf's preview pane
-if [ "${1:-}" = "--preview" ]; then
-  f=$2
-  title=$(rg --no-filename '"type":"(custom-title|ai-title)"' "$f" | tail -1 | jq -r '.customTitle // .aiTitle' || true)
-  cwd=$(rg -m1 --no-filename -o '"cwd":"[^"]*"' "$f" | cut -d'"' -f4 || true)
-  echo "${title:-(untitled)}"
-  echo "${cwd/#$HOME/~}   $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f")"
-  echo
-  echo "Recent prompts:"
-  rg --no-filename '"type":"last-prompt","lastPrompt"' "$f" | jq -r '.lastPrompt | gsub("\\s+"; " ") | .[:300]' |
-    uniq | tail -5 | sed 's/^/• /' || true
-  exit 0
-fi
+title_of() {
+  rg --no-filename '"type":"(custom-title|ai-title)"' "$1" | tail -1 |
+    jq -r '(.customTitle // .aiTitle) | gsub("\\s+"; " ")' 2>/dev/null || true
+}
 
-pr=${1:-}
-branch=${2:-}
-[[ $pr =~ ^[0-9]+$ ]] || usage
-[ -z "$branch" ] || [[ $branch =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] || usage
+cwd_of() {
+  rg -m1 --no-filename -o '"cwd":"[^"]*"' "$1" | cut -d'"' -f4 || true
+}
 
-roots=()
-if [ -n "${CC_PR_PROJECTS:-}" ]; then
-  IFS=: read -r -a roots <<<"$CC_PR_PROJECTS"
-else
-  for d in "$HOME"/.claude*/projects; do [ -d "$d" ] && roots+=("$d"); done
-fi
-[ ${#roots[@]} -gt 0 ] || { echo "cc-pr: no Claude transcript dirs found" >&2; exit 1; }
+# The profile dir a transcript belongs to: <config>/projects/<project>/<id>.jsonl
+config_of() {
+  dirname "$(dirname "$(dirname "$1")")"
+}
 
-# Oniguruma (jq) and Rust (rg) both read this; a branch only has [A-Za-z0-9._/-],
-# of which only "." needs escaping.
-re="pull ?requests?/$pr\\b|\\bPR[ #!]*$pr\\b|!$pr\\b"
-[ -z "$branch" ] || re="$re|${branch//./\\.}"
-
-rows=$(
-  rg -l -i --no-messages -g '*.jsonl' -g '!subagents' -e "$re" "${roots[@]}" | while read -r f; do
-    # Only Claude's text and tool calls, and prompts the user typed.
-    hits=$( { rg -i --no-filename -e "$re" "$f" | jq -r --arg re "$re" '
-      select(
-        (.type == "assistant" and
-          ([.message.content[]? | select(.type == "text" or .type == "tool_use") | tostring] | join(" ") | test($re; "i")))
-        or (.type == "user" and (.isMeta | not) and
-          ((.message.content | if type == "string" then . else [.[]? | select(.type == "text") | .text] | join(" ") end) | test($re; "i")))
-      ) | 1' 2>/dev/null || true; } | wc -l | tr -d ' ')
-    [ "$hits" -gt 0 ] || continue
-    title=$(rg --no-filename '"type":"(custom-title|ai-title)"' "$f" | tail -1 | jq -r '.customTitle // .aiTitle' 2>/dev/null || true)
-    cwd=$(rg -m1 --no-filename -o '"cwd":"[^"]*"' "$f" | cut -d'"' -f4 || true)
-    mtime=$(stat -f %m "$f")
-    when=$(stat -f '%Sm' -t '%m-%d %H:%M' "$f")
-    # Still being written: resuming would put a second writer on the transcript.
-    live=""
-    [ $(( $(date +%s) - mtime )) -lt 120 ] && live="  · active now"
-    printf '%s\t%s\t%s  %s  (%s)%s\n' "$mtime" "$f" "$when" "${title:-untitled}" "${cwd/#$HOME/~}" "$live"
-  done | sort -rn | cut -f2-
-) || true
-
-if [ -z "$rows" ]; then
-  echo "cc-pr: no local Claude session mentions PR $pr${branch:+ or $branch}"
-  exit 1
-fi
-
-if [ "$(printf '%s\n' "$rows" | wc -l)" -eq 1 ]; then
-  pick=$rows
-else
-  pick=$(printf '%s\n' "$rows" | fzf --delimiter='\t' --with-nth=2 --no-sort \
-    --header="Claude sessions on PR $pr — Enter resumes" \
-    --preview="$0 --preview {1}" --preview-window=down,40%,wrap) || exit 130
-fi
-
-f=${pick%%$'\t'*}
-sid=$(basename "$f" .jsonl)
-config=$(dirname "$(dirname "$(dirname "$f")")")
-cwd=$(rg -m1 --no-filename -o '"cwd":"[^"]*"' "$f" | cut -d'"' -f4 || true)
-
-# Sessions are stored per working directory, so resume from the one it ran in.
-if [ -n "$cwd" ] && [ -d "$cwd" ]; then cd "$cwd"; else echo "cc-pr: $cwd is gone; resuming from $PWD" >&2; fi
 # The default profile keeps its state in ~/.claude.json, which an explicit
 # CLAUDE_CONFIG_DIR=~/.claude would skip.
-if [ "$config" = "$HOME/.claude" ]; then unset CLAUDE_CONFIG_DIR; else export CLAUDE_CONFIG_DIR=$config; fi
-# A background session (claude agents) refuses --resume while it lives; open it
-# instead. Its job dir is named after the session id's first block.
-if [ -d "$config/jobs/${sid%%-*}" ]; then exec claude attach "${sid%%-*}"; fi
-# shellcheck disable=SC2086 # CC_PR_CLAUDE is a command plus flags
+use_config() {
+  if [ "$1" = "$HOME/.claude" ]; then unset CLAUDE_CONFIG_DIR; else export CLAUDE_CONFIG_DIR=$1; fi
+}
+
+# "background <short id>", "interactive" or "" for a session id, from the live
+# sessions of the profile already chosen with use_config.
+live_state() {
+  claude agents --json 2>/dev/null | jq -r --arg sid "$1" \
+    'first(.[] | select(.sessionId == $sid) | if .kind == "background" then "background \(.id)" else .kind end) // ""' \
+    2>/dev/null || true
+}
+
+bg=""
+mode=pick
+while [ $# -gt 0 ]; do
+  case $1 in
+    --bg) bg=1; shift ;;
+    --list) mode=list; shift ;;
+    --open) mode=open; open_file=${2:-}; shift 2 || usage ;;
+    --preview)
+      # fzf's preview pane
+      f=$2
+      echo "$(title_of "$f")"
+      cwd=$(cwd_of "$f")
+      echo "${cwd/#$HOME/~}   $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$f")"
+      echo
+      echo "Recent prompts:"
+      rg --no-filename '"type":"last-prompt","lastPrompt"' "$f" | jq -r '.lastPrompt | gsub("\\s+"; " ") | .[:300]' |
+        uniq | tail -5 | sed 's/^/• /' || true
+      exit 0
+      ;;
+    -*) usage ;;
+    *) break ;;
+  esac
+done
+
+if [ "$mode" = open ]; then
+  [ -f "$open_file" ] && [[ $open_file == *.jsonl ]] || { echo "cc-pr: no transcript at $open_file" >&2; exit 1; }
+  pick=$open_file
+else
+  pr=${1:-}
+  branch=${2:-}
+  [[ $pr =~ ^[0-9]+$ ]] || usage
+  [ -z "$branch" ] || [[ $branch =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] || usage
+
+  roots=()
+  if [ -n "${CC_PR_PROJECTS:-}" ]; then
+    IFS=: read -r -a roots <<<"$CC_PR_PROJECTS"
+  else
+    for d in "$HOME"/.claude*/projects; do [ -d "$d" ] && roots+=("$d"); done
+  fi
+  [ ${#roots[@]} -gt 0 ] || { echo "cc-pr: no Claude transcript dirs found" >&2; exit 1; }
+
+  # Oniguruma (jq) and Rust (rg) both read this; a branch only has [A-Za-z0-9._/-],
+  # of which only "." needs escaping.
+  re="pull ?requests?/$pr\\b|\\bPR[ #!]*$pr\\b|!$pr\\b"
+  [ -z "$branch" ] || re="$re|${branch//./\\.}"
+
+  # transcript, title, cwd, mtime, live — newest first
+  rows=$(
+    rg -l -i --no-messages -g '*.jsonl' -g '!subagents' -e "$re" "${roots[@]}" | while read -r f; do
+      # Only Claude's text and tool calls, and prompts the user typed.
+      hits=$( { rg -i --no-filename -e "$re" "$f" | jq -r --arg re "$re" '
+        select(
+          (.type == "assistant" and
+            ([.message.content[]? | select(.type == "text" or .type == "tool_use") | tostring] | join(" ") | test($re; "i")))
+          or (.type == "user" and (.isMeta | not) and
+            ((.message.content | if type == "string" then . else [.[]? | select(.type == "text") | .text] | join(" ") end) | test($re; "i")))
+        ) | 1' 2>/dev/null || true; } | wc -l | tr -d ' ')
+      [ "$hits" -gt 0 ] || continue
+      use_config "$(config_of "$f")"
+      live=$(live_state "$(basename "$f" .jsonl)")
+      printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$(title_of "$f")" "$(cwd_of "$f")" "$(stat -f %m "$f")" "${live%% *}"
+    done | sort -t$'\t' -k4,4rn
+  ) || true
+
+  if [ "$mode" = list ]; then
+    [ -z "$rows" ] || printf '%s\n' "$rows"
+    exit 0
+  fi
+  if [ -z "$rows" ]; then
+    echo "cc-pr: no local Claude session mentions PR $pr${branch:+ or $branch}"
+    exit 1
+  fi
+
+  if [ "$(printf '%s\n' "$rows" | wc -l)" -eq 1 ]; then
+    pick=${rows%%$'\t'*}
+  else
+    menu=$(printf '%s\n' "$rows" | while IFS=$'\t' read -r f title cwd mtime live; do
+      printf '%s\t%s  %s  (%s)%s\n' "$f" "$(date -r "$mtime" '+%m-%d %H:%M')" "${title:-untitled}" \
+        "${cwd/#$HOME/~}" "${live:+  · $live}"
+    done)
+    pick=$(printf '%s\n' "$menu" | fzf --delimiter='\t' --with-nth=2 --no-sort \
+      --header="Claude sessions on PR $pr — Enter resumes" \
+      --preview="$0 --preview {1}" --preview-window=down,40%,wrap) || exit 130
+    pick=${pick%%$'\t'*}
+  fi
+fi
+
+sid=$(basename "$pick" .jsonl)
+use_config "$(config_of "$pick")"
+live=$(live_state "$sid")
+case $live in
+  background*) exec claude attach "${live#background }" ;;
+  interactive) echo "cc-pr: that session is open in another terminal; switch to it there" >&2; exit 1 ;;
+esac
+# A stopped background session reopens with attach; its job dir is named after the
+# session id's first block.
+if [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/${sid%%-*}" ]; then exec claude attach "${sid%%-*}"; fi
+
+# Sessions are stored per working directory, so resume from the one it ran in.
+cwd=$(cwd_of "$pick")
+if [ -n "$cwd" ] && [ -d "$cwd" ]; then cd "$cwd"; else echo "cc-pr: $cwd is gone; resuming from $PWD" >&2; fi
+if [ -n "$bg" ]; then
+  # shellcheck disable=SC2086 # CC_PR_CLAUDE is a command plus flags
+  ${CC_PR_CLAUDE:-claude} --bg --resume "$sid" >/dev/null
+  exec claude attach "${sid%%-*}"
+fi
+# shellcheck disable=SC2086
 exec ${CC_PR_CLAUDE:-claude} --resume "$sid"
