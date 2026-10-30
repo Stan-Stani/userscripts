@@ -33,9 +33,13 @@ usage() {
   exit 2
 }
 
+# The name `claude agents` shows: the agent name, else a /rename title, else the
+# auto title (which can be stale).
 title_of() {
-  rg --no-filename '"type":"(custom-title|ai-title)"' "$1" | tail -1 |
-    jq -r '(.customTitle // .aiTitle) | gsub("\\s+"; " ")' 2>/dev/null || true
+  rg --no-filename '"type":"(agent-name|custom-title|ai-title)"' "$1" | jq -rs '
+    def latest($t): map(select(.type == $t)) | last | .agentName // .customTitle // .aiTitle;
+    [latest("agent-name"), latest("custom-title"), latest("ai-title")] | map(select(.)) | first // ""
+    | gsub("\\s+"; " ")' 2>/dev/null || true
 }
 
 cwd_of() {
