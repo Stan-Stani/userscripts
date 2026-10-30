@@ -23,6 +23,9 @@
 #   CC_PR_PROJECTS  colon-separated transcript dirs (default: every ~/.claude*/projects)
 #   CC_PR_CLAUDE    command that resumes (default: claude), e.g.
 #                   "claude --dangerously-skip-permissions"
+#   CC_PR_EXCLUDE_TITLE  sessions whose title matches this (extended regex, any case)
+#                   are skipped; default: Claude Bridge's own sessions, "Teams: …",
+#                   and sessions about it, "claude bridge …". Empty skips nothing.
 set -euo pipefail
 
 usage() {
@@ -103,6 +106,7 @@ else
   # of which only "." needs escaping.
   re="pull ?requests?/$pr\\b|\\bPR[ #!]*$pr\\b|!$pr\\b"
   [ -z "$branch" ] || re="$re|${branch//./\\.}"
+  exclude=${CC_PR_EXCLUDE_TITLE-^(Teams: |claude bridge)}
 
   # transcript, title, cwd, mtime, live — newest first
   rows=$(
@@ -116,9 +120,11 @@ else
             ((.message.content | if type == "string" then . else [.[]? | select(.type == "text") | .text] | join(" ") end) | test($re; "i")))
         ) | 1' 2>/dev/null || true; } | wc -l | tr -d ' ')
       [ "$hits" -gt 0 ] || continue
+      title=$(title_of "$f")
+      if [ -n "$exclude" ] && printf '%s' "$title" | grep -Eiq -- "$exclude"; then continue; fi
       use_config "$(config_of "$f")"
       live=$(live_state "$(basename "$f" .jsonl)")
-      printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$(title_of "$f")" "$(cwd_of "$f")" "$(stat -f %m "$f")" "${live%% *}"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$title" "$(cwd_of "$f")" "$(stat -f %m "$f")" "${live%% *}"
     done | sort -t$'\t' -k4,4rn
   ) || true
 
