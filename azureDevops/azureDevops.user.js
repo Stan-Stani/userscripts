@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-02.2
+// @version      2026-11-02.3
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1706,9 +1706,9 @@
   // threads, each by its opening comment, fetched on the first hover. The
   // Filter PRs menu (Feature 4) gets a "Hide comments from" section to drop
   // people such as the AI-review build service from both, and a "Show whole
-  // threads" switch: the side panel then lists the whole thread, and
-  // unresolved-thread previews add their latest reply. Both stored in
-  // localStorage.
+  // threads" switch (on unless unticked): each preview is then a thread's
+  // opening comment with its newest or latest reply nested under it, and the
+  // side panel lists the whole thread. Both stored in localStorage.
   //
   // ADO counts "new" against your last visit to the PR, which only the
   // undocumented visits API exposes (artifactVisitsBatch → lastVisitedDate;
@@ -1734,9 +1734,9 @@
     const DEFAULTS_VERSION = "1"
     const SECTION_CLASS = "ado-pr-commenter-filters"
     const PREVIEWS_CLASS = "ado-pr-preview-options"
-    // Previews show whole threads unless this is "0": the side panel lists
-    // every comment in the thread, and unresolved-thread previews add the
-    // latest reply.
+    // ↳, before a reply nested under its thread's opening comment
+    const REPLY_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3v5a2 2 0 0 0 2 2h7"/><path d="M10 7l3 3-3 3"/></svg>`
+    // Previews show whole threads unless this is "0" (see threadEntries).
     const WHOLE_THREADS_KEY = "ado-pr-whole-threads"
     // "{PR path}|{updates text}" → Promise of new comments (newest first) or
     // null. Keying on the text refetches once ADO reports more comments.
@@ -1872,7 +1872,7 @@
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
-      .${CARD_CLASS}-msg, .${CARD_CLASS}-latest {
+      .${CARD_CLASS}-msg {
         display: grid;
         grid-template-columns: 24px minmax(0, 1fr);
         column-gap: 10px;
@@ -1897,15 +1897,24 @@
         border-radius: 4px;
         background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06));
       }
-      .${CARD_CLASS}-latest {
-        grid-template-columns: 18px minmax(0, 1fr);
+      .${CARD_CLASS}-text-one { -webkit-line-clamp: 1; }
+      .${CARD_CLASS}-sub {
+        display: grid;
+        grid-template-columns: 14px 18px minmax(0, 1fr);
         column-gap: 6px;
+        align-items: start;
         margin-top: 4px;
         padding: 6px 8px;
         border-radius: 4px;
         background: var(--palette-black-alpha-4, rgba(0, 0, 0, 0.04));
       }
-      .${CARD_CLASS}-latest .${STACK_CLASS}-avatar {
+      .${CARD_CLASS}-item:hover .${CARD_CLASS}-sub { background: var(--callout-background-color, #fff); }
+      .${CARD_CLASS}-sub-icon {
+        display: inline-flex;
+        margin-top: 2px;
+        color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
+      }
+      .${CARD_CLASS}-sub .${STACK_CLASS}-avatar {
         width: 18px;
         height: 18px;
         box-shadow: none;
@@ -2147,7 +2156,7 @@
         if (c.file) parts.push(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
         const replies = el("div", `${CARD_CLASS}-replies`)
         chain.forEach((m, i) => {
-          // A new comment that is a reply gets marked, so it stands out in its thread.
+          // The reply the preview nested gets marked, so it stands out in its thread.
           const current = i > 0 && m.commentId === c.commentId
           const msg = el("div", `${CARD_CLASS}-msg${current ? ` ${CARD_CLASS}-current` : ""}`)
           const meta = el("div", `${CARD_CLASS}-meta`)
@@ -2178,13 +2187,36 @@
       full.style.top = `${Math.max(8, Math.min(itemRect.top - 10, innerHeight - height - 8))}px`
     }
 
-    function latestReply(m) {
-      const box = el("div", `${CARD_CLASS}-latest`)
+    // With whole threads on, one preview per thread: its opening comment with
+    // the reply that matters nested under it, the latest reply of an
+    // unresolved thread or the newest new comment of a thread. `comments` are
+    // newest first, so a thread's first one is its newest.
+    function threadEntries(comments, threads) {
+      if (!wholeThreads()) return comments.map((c) => ({ head: c }))
+      const byThread = new Map()
+      for (const c of comments) {
+        if (byThread.has(c.threadId)) continue
+        const chain = visibleComments(c.chain)
+        const opening = chain[0] || c
+        const sub = threads ? chain[chain.length - 1] : c
+        byThread.set(c.threadId, {
+          head: { ...opening, file: c.file, threadId: c.threadId, chain: c.chain, replies: chain.length - 1 },
+          sub: sub && sub.commentId !== opening.commentId ? sub : null,
+          label: threads ? "latest" : "new",
+        })
+      }
+      return [...byThread.values()]
+    }
+
+    function subComment(m, label) {
+      const box = el("div", `${CARD_CLASS}-sub`)
+      const icon = el("span", `${CARD_CLASS}-sub-icon`)
+      icon.innerHTML = REPLY_ICON
       const meta = el("div", `${CARD_CLASS}-meta`)
-      meta.append(el("span", `${CARD_CLASS}-name`, m.name), el("span", `${CARD_CLASS}-secondary`, `${timeAgo(m.published)} · latest`))
+      meta.append(el("span", `${CARD_CLASS}-name`, m.name), el("span", `${CARD_CLASS}-secondary`, `${timeAgo(m.published)} · ${label}`))
       const body = el("div", `${CARD_CLASS}-body`)
       body.append(meta, el("div", `${CARD_CLASS}-text`, m.text))
-      box.append(avatar(m), body)
+      box.append(icon, avatar(m), body)
       return box
     }
 
@@ -2194,7 +2226,8 @@
       if (!comments || !comments.length || !cell.isConnected) return
       const box = getCard()
 
-      const items = comments.slice(0, MAX_PREVIEWS).map((c) => {
+      const entries = threadEntries(comments, data.threads)
+      const items = entries.slice(0, MAX_PREVIEWS).map(({ head: c, sub, label }) => {
         const item = el("a", `${CARD_CLASS}-item`)
         const url = new URL(data.prUrl)
         url.searchParams.set("discussionId", c.threadId)
@@ -2205,13 +2238,13 @@
         const body = el("div", `${CARD_CLASS}-body`)
         body.append(meta)
         if (c.file) body.append(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
-        body.append(el("div", `${CARD_CLASS}-text`, c.text))
-        const chain = data.threads && wholeThreads() ? visibleComments(c.chain) : []
-        if (chain.length > 1) body.append(latestReply(chain[chain.length - 1]))
+        body.append(el("div", `${CARD_CLASS}-text${sub ? ` ${CARD_CLASS}-text-one` : ""}`, c.text))
+        if (sub) body.append(subComment(sub, label))
         item.append(avatar(c), body)
         item.addEventListener("mouseenter", () => {
           clearTimeout(fullTimer)
-          showFull(item, c)
+          // The whole thread, with the nested reply marked in it.
+          showFull(item, sub ? { ...c, commentId: sub.commentId } : c)
         })
         item.addEventListener("mouseleave", scheduleFullHide)
         return item
@@ -2220,8 +2253,8 @@
       const open = el("a", "", "Open pull request")
       open.href = data.prUrl
       footer.append(open)
-      if (comments.length > MAX_PREVIEWS) {
-        footer.append(el("span", `${CARD_CLASS}-secondary`, `+${comments.length - MAX_PREVIEWS} more`))
+      if (entries.length > MAX_PREVIEWS) {
+        footer.append(el("span", `${CARD_CLASS}-secondary`, `+${entries.length - MAX_PREVIEWS} more`))
       }
       box.replaceChildren(el("div", `${CARD_CLASS}-title`, data.title), ...items, footer)
       box.hidden = false
