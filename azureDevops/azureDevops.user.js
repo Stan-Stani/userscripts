@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-02.3
+// @version      2026-11-02.4
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1706,9 +1706,10 @@
   // threads, each by its opening comment, fetched on the first hover. The
   // Filter PRs menu (Feature 4) gets a "Hide comments from" section to drop
   // people such as the AI-review build service from both, and a "Show whole
-  // threads" switch (on unless unticked): each preview is then a thread's
-  // opening comment with its newest or latest reply nested under it, and the
-  // side panel lists the whole thread. Both stored in localStorage.
+  // threads" switch (on unless unticked) for the side panel to list every
+  // comment in the thread. Both stored in localStorage. Either way, each
+  // preview is a thread's opening comment with its newest or latest reply
+  // nested under it.
   //
   // ADO counts "new" against your last visit to the PR, which only the
   // undocumented visits API exposes (artifactVisitsBatch → lastVisitedDate;
@@ -1736,7 +1737,7 @@
     const PREVIEWS_CLASS = "ado-pr-preview-options"
     // ↳, before a reply nested under its thread's opening comment
     const REPLY_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3v5a2 2 0 0 0 2 2h7"/><path d="M10 7l3 3-3 3"/></svg>`
-    // Previews show whole threads unless this is "0" (see threadEntries).
+    // The side panel shows whole threads unless this is "0" (see showFull).
     const WHOLE_THREADS_KEY = "ado-pr-whole-threads"
     // "{PR path}|{updates text}" → Promise of new comments (newest first) or
     // null. Keying on the text refetches once ADO reports more comments.
@@ -2148,16 +2149,19 @@
 
     // The whole comment beside the card (left of it, else right), level with
     // the hovered preview, so the card never reflows under the pointer.
-    function showFull(item, c) {
-      const chain = wholeThreads() ? visibleComments(c.chain) : []
+    // The preview in full: with whole threads on, every comment in its thread;
+    // otherwise just the comment and the reply nested under it, if any.
+    function showFull(item, c, sub) {
+      const whole = wholeThreads()
+      const chain = whole ? visibleComments(c.chain) : sub ? [c, sub] : []
       const parts = []
       if (chain.length > 1) {
-        parts.push(el("div", `${CARD_CLASS}-name`, `Thread · ${chain.length} comments`))
+        if (whole) parts.push(el("div", `${CARD_CLASS}-name`, `Thread · ${chain.length} comments`))
         if (c.file) parts.push(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
         const replies = el("div", `${CARD_CLASS}-replies`)
         chain.forEach((m, i) => {
           // The reply the preview nested gets marked, so it stands out in its thread.
-          const current = i > 0 && m.commentId === c.commentId
+          const current = whole && sub && m.commentId === sub.commentId
           const msg = el("div", `${CARD_CLASS}-msg${current ? ` ${CARD_CLASS}-current` : ""}`)
           const meta = el("div", `${CARD_CLASS}-meta`)
           meta.append(el("span", `${CARD_CLASS}-name`, m.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(m.published)))
@@ -2187,12 +2191,11 @@
       full.style.top = `${Math.max(8, Math.min(itemRect.top - 10, innerHeight - height - 8))}px`
     }
 
-    // With whole threads on, one preview per thread: its opening comment with
-    // the reply that matters nested under it, the latest reply of an
-    // unresolved thread or the newest new comment of a thread. `comments` are
-    // newest first, so a thread's first one is its newest.
+    // One preview per thread: its opening comment with the reply that matters
+    // nested under it, the latest reply of an unresolved thread or the newest
+    // new comment of a thread. `comments` are newest first, so a thread's first
+    // one is its newest.
     function threadEntries(comments, threads) {
-      if (!wholeThreads()) return comments.map((c) => ({ head: c }))
       const byThread = new Map()
       for (const c of comments) {
         if (byThread.has(c.threadId)) continue
@@ -2243,8 +2246,7 @@
         item.append(avatar(c), body)
         item.addEventListener("mouseenter", () => {
           clearTimeout(fullTimer)
-          // The whole thread, with the nested reply marked in it.
-          showFull(item, sub ? { ...c, commentId: sub.commentId } : c)
+          showFull(item, c, sub)
         })
         item.addEventListener("mouseleave", scheduleFullHide)
         return item
