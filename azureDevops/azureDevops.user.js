@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-02.5
+// @version      2026-11-02.6
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -2194,7 +2194,7 @@
     // otherwise just the comment and the reply nested under it, if any.
     function showFull(item, c, sub) {
       const whole = wholeThreads()
-      const chain = whole ? visibleComments(c.chain) : sub ? [c, sub] : []
+      const chain = whole ? shownChain(c.chain) : sub ? [c, sub] : []
       const parts = []
       if (chain.length > 1) {
         if (whole) parts.push(el("div", `${CARD_CLASS}-name`, `Thread · ${chain.length} comments`))
@@ -2232,19 +2232,27 @@
       full.style.top = `${Math.max(8, Math.min(itemRect.top - 10, innerHeight - height - 8))}px`
     }
 
+    // A thread as shown: its opening comment always, as context, even from
+    // someone hidden; the rest only from people who aren't.
+    function shownChain(chain) {
+      return chain.length ? [chain[0], ...visibleComments(chain.slice(1))] : []
+    }
+
     // One preview per thread: its opening comment with the reply that matters
     // nested under it, the latest reply of an unresolved thread or the newest
-    // new comment of a thread. `comments` are newest first, so a thread's first
-    // one is its newest.
+    // new comment of a thread. A thread whose comments are all from hidden
+    // people is left out. `comments` are newest first, so a thread's first one
+    // is its newest.
     function threadEntries(comments, threads) {
       const byThread = new Map()
-      for (const c of comments) {
+      for (const c of threads ? comments : visibleComments(comments)) {
         if (byThread.has(c.threadId)) continue
-        const chain = visibleComments(c.chain)
-        const opening = chain[0] || c
-        const sub = threads ? chain[chain.length - 1] : c
+        const visible = visibleComments(c.chain)
+        if (!visible.length) continue
+        const opening = c.chain[0] || c
+        const sub = threads ? visible[visible.length - 1] : c
         byThread.set(c.threadId, {
-          head: { ...opening, file: c.file, threadId: c.threadId, chain: c.chain, replies: chain.length - 1 },
+          head: { ...opening, file: c.file, threadId: c.threadId, chain: c.chain, replies: c.chain.length - 1 },
           sub: sub && sub.commentId !== opening.commentId ? sub : null,
           label: threads ? "latest" : "new",
         })
@@ -2266,11 +2274,10 @@
 
     function showCard(cell) {
       const data = cellData.get(cell)
-      const comments = data && visibleComments(data.comments)
-      if (!comments || !comments.length || !cell.isConnected) return
+      const entries = data && data.comments ? threadEntries(data.comments, data.threads) : []
+      if (!entries.length || !cell.isConnected) return
       const box = getCard()
 
-      const entries = threadEntries(comments, data.threads)
       const items = entries.slice(0, MAX_PREVIEWS).map(({ head: c, sub, label }) => {
         const item = el("a", `${CARD_CLASS}-item`)
         const url = new URL(data.prUrl)

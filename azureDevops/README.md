@@ -226,7 +226,9 @@ show just the preview's comments.
 
 To drop someone (e.g. **Core API Build Service**), open **Filter PRs** and tick
 them under **Hide comments from**. The list is stored in `localStorage` on the
-Azure DevOps origin, so it survives reloads, and applies to both cards.
+Azure DevOps origin, so it survives reloads, and applies to both cards. A
+thread opened by someone hidden still shows when someone else replies, with
+that opening comment as context.
 **Azure Pipelines Test Service** starts out ticked, since it only posts test
 results; untick it to see those.
 
