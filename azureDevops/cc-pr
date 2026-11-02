@@ -11,10 +11,10 @@
 # --bg makes the session a background agent (`claude agents` lists it) and attaches
 # this terminal to it, instead of a plain `claude --resume`. A session that is already
 # running in the background is attached either way; one open in another terminal is
-# left alone. --no-attach stops there: the session runs in the background, to be
-# opened from an agents view (← in an attached terminal opens one without the flags
-# your own `claude agents` was started with, so sessions started there lose its
-# permission mode).
+# left alone. --no-attach stops there and prints "<short id>\t<name>": the session
+# runs in the background, to be opened from an agents view (← in an attached terminal
+# opens one without the flags your own `claude agents` was started with, so sessions
+# started there lose its permission mode).
 #
 # A session counts when Claude's own messages or the user's prompts mention the PR
 # (its URL, "PR 123", "!123", pullRequests/123) or its source branch. Tool output,
@@ -161,29 +161,48 @@ else
 fi
 
 sid=$(basename "$pick" .jsonl)
+short=${sid%%-*}
 use_config "$(config_of "$pick")"
 live=$(live_state "$sid")
+
+# --no-attach reports the session as "<short id>\t<name in the agents list>".
+report() {
+  local name
+  name=$(claude agents --json 2>/dev/null | jq -r --arg s "$sid" 'first(.[] | select(.sessionId == $s) | .name // "") // ""' 2>/dev/null || true)
+  printf '%s\t%s\n' "$short" "$name"
+}
+
 case $live in
   background*)
-    if [ -n "$no_attach" ]; then echo "cc-pr: already running in the background as ${live#background }"; exit 0; fi
+    if [ -n "$no_attach" ]; then echo "cc-pr: already running in the background" >&2; report; exit 0; fi
     exec claude attach "${live#background }"
     ;;
   interactive) echo "cc-pr: that session is open in another terminal; switch to it there" >&2; exit 1 ;;
 esac
-# A stopped background session reopens with attach; its job dir is named after the
-# session id's first block. (--bg --resume below revives it under the same id too.)
-if [ -z "$no_attach" ] && [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/${sid%%-*}" ]; then
-  exec claude attach "${sid%%-*}"
-fi
 
 # Sessions are stored per working directory, so resume from the one it ran in.
 cwd=$(cwd_of "$pick")
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then cd "$cwd"; else echo "cc-pr: $cwd is gone; resuming from $PWD" >&2; fi
+
+# A stopped background session (its job dir is named after the session id's first
+# block) keeps its own saved options: attach reopens it, and --bg --resume without
+# flags continues it, where flags would start a copy instead.
+if [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/$short" ]; then
+  [ -n "$no_attach" ] || exec claude attach "$short"
+  claude --bg --resume "$sid" >/dev/null
+  echo "cc-pr: continued in the background" >&2
+  report
+  exit 0
+fi
+
 if [ -n "$bg" ]; then
+  # Named after its title, so the agents list (and its name search) shows it as the
+  # picker did rather than by id.
+  title=$(title_of "$pick")
   # shellcheck disable=SC2086 # CC_PR_CLAUDE is a command plus flags
-  ${CC_PR_CLAUDE:-claude} --bg --resume "$sid" >/dev/null
-  if [ -n "$no_attach" ]; then echo "cc-pr: resumed in the background as ${sid%%-*}"; exit 0; fi
-  exec claude attach "${sid%%-*}"
+  ${CC_PR_CLAUDE:-claude} --bg --resume "$sid" ${title:+-n "$title"} >/dev/null
+  if [ -n "$no_attach" ]; then echo "cc-pr: resumed in the background" >&2; report; exit 0; fi
+  exec claude attach "$short"
 fi
 # shellcheck disable=SC2086
 exec ${CC_PR_CLAUDE:-claude} --resume "$sid"
