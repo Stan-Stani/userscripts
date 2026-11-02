@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-02.1
+// @version      2026-11-02.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1734,8 +1734,9 @@
     const DEFAULTS_VERSION = "1"
     const SECTION_CLASS = "ado-pr-commenter-filters"
     const PREVIEWS_CLASS = "ado-pr-preview-options"
-    // "1" = previews show whole threads: the side panel lists every comment in
-    // the thread, and unresolved-thread previews add the latest reply.
+    // Previews show whole threads unless this is "0": the side panel lists
+    // every comment in the thread, and unresolved-thread previews add the
+    // latest reply.
     const WHOLE_THREADS_KEY = "ado-pr-whole-threads"
     // "{PR path}|{updates text}" → Promise of new comments (newest first) or
     // null. Keying on the text refetches once ADO reports more comments.
@@ -1938,7 +1939,7 @@
       localStorage.setItem(DEFAULTS_KEY, DEFAULTS_VERSION)
     }
     function wholeThreads() {
-      return localStorage.getItem(WHOLE_THREADS_KEY) === "1"
+      return localStorage.getItem(WHOLE_THREADS_KEY) !== "0"
     }
     function visibleComments(comments) {
       const hiddenIds = new Set(getHidden().map((h) => h.id))
@@ -2273,8 +2274,7 @@
       input.type = "checkbox"
       input.checked = wholeThreads()
       input.addEventListener("change", () => {
-        if (input.checked) localStorage.setItem(WHOLE_THREADS_KEY, "1")
-        else localStorage.removeItem(WHOLE_THREADS_KEY)
+        localStorage.setItem(WHOLE_THREADS_KEY, input.checked ? "1" : "0")
         hideCard()
       })
       label.append(input, el("span", "", "Show whole threads"))

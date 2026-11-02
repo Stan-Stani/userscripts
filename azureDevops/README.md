@@ -215,10 +215,10 @@ straight to its thread.
 same card listing those threads: each one's opening comment, file and line, and
 how many replies it has.
 
-Tick **Show whole threads** under **Filter PRs → Previews** to read the whole
-conversation: the side panel then lists every comment in the thread (a new
-reply is highlighted in its thread), and each unresolved-thread preview adds
-its latest reply.
+Previews show the whole conversation: the side panel lists every comment in
+the thread (a new reply is highlighted in its thread), and each
+unresolved-thread preview adds its latest reply. Untick **Show whole threads**
+under **Filter PRs → Previews** to see just the one comment.
 
 To drop someone (e.g. **Core API Build Service**), open **Filter PRs** and tick
 them under **Hide comments from**. The list is stored in `localStorage` on the
