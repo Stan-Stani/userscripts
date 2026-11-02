@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-02.4
+// @version      2026-11-02.5
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -71,9 +71,9 @@
     return { prefix, repo, prId: m[1] }
   }
 
-  async function fetchJson(url, body) {
+  async function fetchJson(url, body, method) {
     const response = await fetch(url, {
-      method: body ? "POST" : "GET",
+      method: method || (body ? "POST" : "GET"),
       credentials: "include",
       headers: body
         ? { Accept: "application/json", "Content-Type": "application/json" }
@@ -1700,8 +1700,9 @@
   // On My pull requests, a row whose updates say "N new comments" gets the
   // commenters' photos in front of that text, people before service
   // identities. Hovering the updates cell opens a card previewing each new
-  // comment (who, when, file, text) with a link to its thread; hovering a
-  // preview shows that comment in full beside the card. Hovering a comment
+  // comment (who, when, file, text) with a link to its thread, and "Mark as
+  // viewed" records a visit without opening the PR; hovering a preview shows
+  // that comment in full beside the card. Hovering a comment
   // count with unresolved threads ("2 / 3") opens the same card for those
   // threads, each by its opening comment, fetched on the first hover. The
   // Filter PRs menu (Feature 4) gets a "Hide comments from" section to drop
@@ -1744,6 +1745,9 @@
     const commentsByKey = new Map()
     // Same for unresolved threads, keyed on "{PR path}|{comment count}".
     const threadsByKey = new Map()
+    // PRs marked as viewed from a card since the page loaded. ADO's list keeps
+    // saying "N new comments" until it reloads, so their cells say so instead.
+    const viewedPrs = new Set()
     // Everyone loaded so far, hidden or not: id → { name, isPerson }.
     const seenCommenters = new Map()
     // Updates cell → { comments, prUrl } for its hover card.
@@ -1851,10 +1855,30 @@
       }
       .${CARD_CLASS}-footer {
         display: flex;
-        justify-content: space-between;
+        align-items: baseline;
         gap: 12px;
         padding-top: 10px;
         border-top: 1px solid var(--palette-black-alpha-10, rgba(0, 0, 0, 0.1));
+      }
+      .${CARD_CLASS}-mark {
+        margin-left: auto;
+        padding: 0;
+        border: 0;
+        background: none;
+        font: inherit;
+        color: var(--communication-foreground, #0078d4);
+        cursor: pointer;
+      }
+      .${CARD_CLASS}-mark:hover { text-decoration: underline; }
+      .${CARD_CLASS}-mark:disabled {
+        color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
+        cursor: default;
+        text-decoration: none;
+      }
+      .${STACK_CLASS}-hidden { display: none !important; }
+      .${STACK_CLASS}-viewed {
+        color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
+        white-space: nowrap;
       }
       .${CARD_CLASS}-full {
         width: 480px;
@@ -2011,6 +2035,25 @@
       }
     }
 
+    // The visits API's id for a PR, which needs its project and repository
+    // GUIDs; the row link only has their names.
+    function visitsArtifactId(pr) {
+      return `vstfs:///Git/PullRequestId/${pr.repository.project.id}%2F${pr.repository.id}%2F${pr.pullRequestId}`
+    }
+
+    // Records a visit to the PR, as opening it does, so its comments stop
+    // counting as new.
+    async function markViewed(info) {
+      const pr = await fetchJson(
+        `${location.origin}${info.prefix}/_apis/git/repositories/${info.repo}/pullRequests/${info.prId}?api-version=7.1`
+      )
+      await fetchJson(
+        `${collectionUrl(info.prefix)}/_apis/visits/artifactVisits?api-version=7.1-preview.1`,
+        { artifactId: visitsArtifactId(pr) },
+        "PUT"
+      )
+    }
+
     async function loadNewComments(info) {
       const api =
         `${location.origin}${info.prefix}/_apis/git/repositories/` +
@@ -2018,9 +2061,7 @@
       // The visits artifact id needs the project and repository GUIDs; the
       // row link only has their names.
       const pr = await fetchJson(`${api}?api-version=7.1`)
-      const artifactId =
-        `vstfs:///Git/PullRequestId/${pr.repository.project.id}` +
-        `%2F${pr.repository.id}%2F${pr.pullRequestId}`
+      const artifactId = visitsArtifactId(pr)
       const [visits, threads] = await Promise.all([
         fetchJson(
           `${collectionUrl(info.prefix)}/_apis/visits/artifactVisitsBatch?api-version=7.1-preview.1`,
@@ -2258,6 +2299,23 @@
       if (entries.length > MAX_PREVIEWS) {
         footer.append(el("span", `${CARD_CLASS}-secondary`, `+${entries.length - MAX_PREVIEWS} more`))
       }
+      if (data.markViewed) {
+        const mark = el("button", `${CARD_CLASS}-mark`, "Mark as viewed")
+        mark.type = "button"
+        mark.addEventListener("click", async () => {
+          mark.disabled = true
+          mark.textContent = "Marking…"
+          try {
+            await data.markViewed()
+            hideCard()
+          } catch (e) {
+            console.error("[ADO Toolbox] Could not mark the pull request as viewed:", e)
+            mark.disabled = false
+            mark.textContent = "Couldn't mark it; retry"
+          }
+        })
+        footer.append(mark)
+      }
       box.replaceChildren(el("div", `${CARD_CLASS}-title`, data.title), ...items, footer)
       box.hidden = false
 
@@ -2407,6 +2465,15 @@
       })
     }
 
+    // ADO's "N new comments" line, swapped for a note once marked as viewed.
+    function showViewed(textNode) {
+      const line = textNode.parentElement
+      line.classList.add(`${STACK_CLASS}-hidden`)
+      if (!line.parentElement.querySelector(`.${STACK_CLASS}-viewed`)) {
+        line.parentElement.insertBefore(el("span", `${STACK_CLASS}-viewed`, "Marked as viewed"), line)
+      }
+    }
+
     function processUpdatesCells() {
       // The menu is created on Feature 4's own schedule; cheap no-op otherwise.
       renderFilterSection()
@@ -2424,6 +2491,10 @@
         const pr = rowPr(cell)
         if (!pr) return
         const { info } = pr
+        if (viewedPrs.has(pr.prUrl)) {
+          showViewed(textNode)
+          return
+        }
 
         const key = `${info.prefix}/${info.repo}/${info.prId}|${textNode.nodeValue}`
         if (!commentsByKey.has(key)) {
@@ -2446,7 +2517,18 @@
           const stack = makeStack(authorsOf(visible))
           stack.dataset.text = textNode.nodeValue
           line.parentElement.insertBefore(stack, line)
-          cellData.set(cell, { comments, prUrl: pr.prUrl, title: "New since your last visit" })
+          cellData.set(cell, {
+            comments,
+            prUrl: pr.prUrl,
+            title: "New since your last visit",
+            markViewed: async () => {
+              await markViewed(info)
+              viewedPrs.add(pr.prUrl)
+              cellData.delete(cell)
+              cell.querySelector(`.${STACK_CLASS}`)?.remove()
+              processUpdatesCells()
+            },
+          })
           bindHover(cell)
         })
       })

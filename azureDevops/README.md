@@ -210,6 +210,9 @@ review, pipelines). **Hover** the updates cell for a card previewing each new
 comment — who, when, which file and line, and the first two lines. Hover a
 preview to read the whole comment in a panel beside the card; click it to jump
 straight to its thread.
+**Mark as viewed** in the card's footer clears the new comments without
+opening the PR: it records a visit, as opening the PR would, and the row then
+says "Marked as viewed" until the list reloads.
 
 **Hover** a comment count with unresolved threads (the orange "2 / 3") for the
 same card listing those threads: each one's opening comment, file and line, and
