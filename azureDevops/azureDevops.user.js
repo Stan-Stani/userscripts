@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-10-30.4
+// @version      2026-11-02.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1705,7 +1705,9 @@
   // count with unresolved threads ("2 / 3") opens the same card for those
   // threads, each by its opening comment, fetched on the first hover. The
   // Filter PRs menu (Feature 4) gets a "Hide comments from" section to drop
-  // people such as the AI-review build service from both; stored in
+  // people such as the AI-review build service from both, and a "Show whole
+  // threads" switch: the side panel then lists the whole thread, and
+  // unresolved-thread previews add their latest reply. Both stored in
   // localStorage.
   //
   // ADO counts "new" against your last visit to the PR, which only the
@@ -1731,6 +1733,10 @@
     const DEFAULTS_KEY = "ado-pr-hidden-commenters-defaults"
     const DEFAULTS_VERSION = "1"
     const SECTION_CLASS = "ado-pr-commenter-filters"
+    const PREVIEWS_CLASS = "ado-pr-preview-options"
+    // "1" = previews show whole threads: the side panel lists every comment in
+    // the thread, and unresolved-thread previews add the latest reply.
+    const WHOLE_THREADS_KEY = "ado-pr-whole-threads"
     // "{PR path}|{updates text}" → Promise of new comments (newest first) or
     // null. Keying on the text refetches once ADO reports more comments.
     const commentsByKey = new Map()
@@ -1865,6 +1871,45 @@
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
+      .${CARD_CLASS}-msg, .${CARD_CLASS}-latest {
+        display: grid;
+        grid-template-columns: 24px minmax(0, 1fr);
+        column-gap: 10px;
+      }
+      .${CARD_CLASS}-msg .${STACK_CLASS}-avatar {
+        width: 24px;
+        height: 24px;
+        box-shadow: none;
+        font-size: 10px;
+      }
+      .${CARD_CLASS}-replies {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-left: 11px;
+        padding-left: 12px;
+        border-left: 2px solid var(--palette-black-alpha-10, rgba(0, 0, 0, 0.1));
+      }
+      .${CARD_CLASS}-current {
+        margin: -4px -6px;
+        padding: 4px 6px;
+        border-radius: 4px;
+        background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06));
+      }
+      .${CARD_CLASS}-latest {
+        grid-template-columns: 18px minmax(0, 1fr);
+        column-gap: 6px;
+        margin-top: 4px;
+        padding: 6px 8px;
+        border-radius: 4px;
+        background: var(--palette-black-alpha-4, rgba(0, 0, 0, 0.04));
+      }
+      .${CARD_CLASS}-latest .${STACK_CLASS}-avatar {
+        width: 18px;
+        height: 18px;
+        box-shadow: none;
+        font-size: 8px;
+      }
       .${SECTION_CLASS} {
         margin-top: 8px;
         padding-top: 8px;
@@ -1891,6 +1936,9 @@
       DEFAULT_HIDDEN.forEach((d) => list.some((h) => h.id === d.id) || list.push(d))
       saveHidden(list)
       localStorage.setItem(DEFAULTS_KEY, DEFAULTS_VERSION)
+    }
+    function wholeThreads() {
+      return localStorage.getItem(WHOLE_THREADS_KEY) === "1"
     }
     function visibleComments(comments) {
       const hiddenIds = new Set(getHidden().map((h) => h.id))
@@ -1921,12 +1969,7 @@
         .trim()
     }
 
-    function preview(thread, c) {
-      const ctx = thread.threadContext
-      const line =
-        ctx &&
-        ((ctx.rightFileStart && ctx.rightFileStart.line) ||
-          (ctx.leftFileStart && ctx.leftFileStart.line))
+    function message(c) {
       return {
         authorId: c.author.id,
         // "Core API Build Service (SteffesGroup)" → "Core API Build Service"
@@ -1937,9 +1980,23 @@
         // Service identities (AI review, pipelines) have no email.
         isPerson: (c.author.uniqueName || "").includes("@"),
         published: c.publishedDate,
-        file: ctx && ctx.filePath ? `${ctx.filePath}${line ? `:${line}` : ""}` : "",
         text: plainText(c.content || ""),
+        commentId: c.id,
+      }
+    }
+
+    function preview(thread, c) {
+      const ctx = thread.threadContext
+      const line =
+        ctx &&
+        ((ctx.rightFileStart && ctx.rightFileStart.line) ||
+          (ctx.leftFileStart && ctx.leftFileStart.line))
+      return {
+        ...message(c),
+        file: ctx && ctx.filePath ? `${ctx.filePath}${line ? `:${line}` : ""}` : "",
         threadId: thread.id,
+        // Every text comment in the thread, oldest first, for whole threads.
+        chain: (thread.comments || []).filter((m) => m.commentType === "text" && !m.isDeleted).map(message),
       }
     }
 
@@ -2082,11 +2139,32 @@
     // The whole comment beside the card (left of it, else right), level with
     // the hovered preview, so the card never reflows under the pointer.
     function showFull(item, c) {
-      const meta = el("div", `${CARD_CLASS}-meta`)
-      meta.append(el("span", `${CARD_CLASS}-name`, c.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(c.published)))
-      const parts = [meta]
-      if (c.file) parts.push(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
-      parts.push(el("div", `${CARD_CLASS}-text`, c.text))
+      const chain = wholeThreads() ? visibleComments(c.chain) : []
+      const parts = []
+      if (chain.length > 1) {
+        parts.push(el("div", `${CARD_CLASS}-name`, `Thread · ${chain.length} comments`))
+        if (c.file) parts.push(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
+        const replies = el("div", `${CARD_CLASS}-replies`)
+        chain.forEach((m, i) => {
+          // A new comment that is a reply gets marked, so it stands out in its thread.
+          const current = i > 0 && m.commentId === c.commentId
+          const msg = el("div", `${CARD_CLASS}-msg${current ? ` ${CARD_CLASS}-current` : ""}`)
+          const meta = el("div", `${CARD_CLASS}-meta`)
+          meta.append(el("span", `${CARD_CLASS}-name`, m.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(m.published)))
+          const body = el("div", `${CARD_CLASS}-body`)
+          body.append(meta, el("div", `${CARD_CLASS}-text`, m.text))
+          msg.append(avatar(m), body)
+          if (i === 0) parts.push(msg)
+          else replies.append(msg)
+        })
+        parts.push(replies)
+      } else {
+        const meta = el("div", `${CARD_CLASS}-meta`)
+        meta.append(el("span", `${CARD_CLASS}-name`, c.name), el("span", `${CARD_CLASS}-secondary`, timeAgo(c.published)))
+        parts.push(meta)
+        if (c.file) parts.push(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
+        parts.push(el("div", `${CARD_CLASS}-text`, c.text))
+      }
       full.replaceChildren(...parts)
       full.scrollTop = 0
       full.hidden = false
@@ -2097,6 +2175,16 @@
       const leftOfCard = cardRect.left - width - 8
       full.style.left = `${leftOfCard >= 8 ? leftOfCard : Math.min(cardRect.right + 8, innerWidth - width - 8)}px`
       full.style.top = `${Math.max(8, Math.min(itemRect.top - 10, innerHeight - height - 8))}px`
+    }
+
+    function latestReply(m) {
+      const box = el("div", `${CARD_CLASS}-latest`)
+      const meta = el("div", `${CARD_CLASS}-meta`)
+      meta.append(el("span", `${CARD_CLASS}-name`, m.name), el("span", `${CARD_CLASS}-secondary`, `${timeAgo(m.published)} · latest`))
+      const body = el("div", `${CARD_CLASS}-body`)
+      body.append(meta, el("div", `${CARD_CLASS}-text`, m.text))
+      box.append(avatar(m), body)
+      return box
     }
 
     function showCard(cell) {
@@ -2117,6 +2205,8 @@
         body.append(meta)
         if (c.file) body.append(el("div", `${CARD_CLASS}-secondary ${CARD_CLASS}-file`, c.file))
         body.append(el("div", `${CARD_CLASS}-text`, c.text))
+        const chain = data.threads && wholeThreads() ? visibleComments(c.chain) : []
+        if (chain.length > 1) body.append(latestReply(chain[chain.length - 1]))
         item.append(avatar(c), body)
         item.addEventListener("mouseenter", () => {
           clearTimeout(fullTimer)
@@ -2175,15 +2265,35 @@
 
     // Appended to Feature 4's menu; rebuilt only when the set of people
     // changes, so toggling a checkbox doesn't redraw under the pointer.
+    function renderPreviewSection(menu) {
+      if (menu.querySelector(`.${PREVIEWS_CLASS}`)) return
+      const label = el("label", "ado-pr-filter-option")
+      label.setAttribute("role", "menuitemcheckbox")
+      const input = el("input")
+      input.type = "checkbox"
+      input.checked = wholeThreads()
+      input.addEventListener("change", () => {
+        if (input.checked) localStorage.setItem(WHOLE_THREADS_KEY, "1")
+        else localStorage.removeItem(WHOLE_THREADS_KEY)
+        hideCard()
+      })
+      label.append(input, el("span", "", "Show whole threads"))
+      const section = el("div", `${SECTION_CLASS} ${PREVIEWS_CLASS}`)
+      section.append(el("div", `${SECTION_CLASS}-title`, "Previews"), label)
+      // Above "Hide comments from", which comes and goes with the people loaded.
+      menu.insertBefore(section, menu.querySelector(`.${SECTION_CLASS}`))
+    }
+
     function renderFilterSection() {
       const menu = document.querySelector("#ado-pr-filter-control .ado-pr-filter-menu")
       if (!menu) return
+      renderPreviewSection(menu)
       const hidden = getHidden()
       const hiddenIds = new Set(hidden.map((h) => h.id))
       const people = new Map(seenCommenters)
       hidden.forEach((h) => people.has(h.id) || people.set(h.id, { name: h.name, isPerson: true }))
 
-      let section = menu.querySelector(`.${SECTION_CLASS}`)
+      let section = menu.querySelector(`.${SECTION_CLASS}:not(.${PREVIEWS_CLASS})`)
       const signature = [...people.keys()].sort().join(",")
       if (section && section.dataset.signature === signature) return
       if (!people.size) {
@@ -2257,7 +2367,7 @@
           const comments = await threadsByKey.get(key)
           if (!comments) return null
           noteCommenters(comments)
-          return { comments, prUrl: pr.prUrl, title: "Unresolved threads" }
+          return { comments, prUrl: pr.prUrl, title: "Unresolved threads", threads: true }
         })
       })
     }
