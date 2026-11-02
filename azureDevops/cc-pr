@@ -3,15 +3,18 @@
 # request and resume one. The Toolbox's "Resume locally" button hands the PR to it
 # through a URL handler (see README); it also runs by hand:
 #
-#   cc-pr [--bg] <pr-id> [source-branch]   pick a session (fzf) and resume it here
-#   cc-pr [--bg] --open <transcript>       resume that session here
+#   cc-pr [--bg [--no-attach]] <pr-id> [source-branch]   pick a session (fzf), resume it here
+#   cc-pr [--bg [--no-attach]] --open <transcript>       resume that session here
 #   cc-pr --list <pr-id> [source-branch]   print the matches for another picker:
 #                                          transcript, title, cwd, mtime, live (tab-separated)
 #
 # --bg makes the session a background agent (`claude agents` lists it) and attaches
 # this terminal to it, instead of a plain `claude --resume`. A session that is already
 # running in the background is attached either way; one open in another terminal is
-# left alone.
+# left alone. --no-attach stops there: the session runs in the background, to be
+# opened from an agents view (← in an attached terminal opens one without the flags
+# your own `claude agents` was started with, so sessions started there lose its
+# permission mode).
 #
 # A session counts when Claude's own messages or the user's prompts mention the PR
 # (its URL, "PR 123", "!123", pullRequests/123) or its source branch. Tool output,
@@ -66,10 +69,12 @@ live_state() {
 }
 
 bg=""
+no_attach=""
 mode=pick
 while [ $# -gt 0 ]; do
   case $1 in
     --bg) bg=1; shift ;;
+    --no-attach) bg=1; no_attach=1; shift ;;
     --list) mode=list; shift ;;
     --open) mode=open; open_file=${2:-}; shift 2 || usage ;;
     --preview)
@@ -159,12 +164,17 @@ sid=$(basename "$pick" .jsonl)
 use_config "$(config_of "$pick")"
 live=$(live_state "$sid")
 case $live in
-  background*) exec claude attach "${live#background }" ;;
+  background*)
+    if [ -n "$no_attach" ]; then echo "cc-pr: already running in the background as ${live#background }"; exit 0; fi
+    exec claude attach "${live#background }"
+    ;;
   interactive) echo "cc-pr: that session is open in another terminal; switch to it there" >&2; exit 1 ;;
 esac
 # A stopped background session reopens with attach; its job dir is named after the
-# session id's first block.
-if [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/${sid%%-*}" ]; then exec claude attach "${sid%%-*}"; fi
+# session id's first block. (--bg --resume below revives it under the same id too.)
+if [ -z "$no_attach" ] && [ -d "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/jobs/${sid%%-*}" ]; then
+  exec claude attach "${sid%%-*}"
+fi
 
 # Sessions are stored per working directory, so resume from the one it ran in.
 cwd=$(cwd_of "$pick")
@@ -172,6 +182,7 @@ if [ -n "$cwd" ] && [ -d "$cwd" ]; then cd "$cwd"; else echo "cc-pr: $cwd is gon
 if [ -n "$bg" ]; then
   # shellcheck disable=SC2086 # CC_PR_CLAUDE is a command plus flags
   ${CC_PR_CLAUDE:-claude} --bg --resume "$sid" >/dev/null
+  if [ -n "$no_attach" ]; then echo "cc-pr: resumed in the background as ${sid%%-*}"; exit 0; fi
   exec claude attach "${sid%%-*}"
 fi
 # shellcheck disable=SC2086
