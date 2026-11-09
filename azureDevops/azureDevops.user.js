@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-02.6
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, and the Claude sessions behind a PR.
+// @version      2026-11-09.1
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, and a send-to-Claude-Code button on PR comment threads.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
@@ -29,6 +29,7 @@
  *   8. Work on in Claude   — button that hands a work item to a launcher on your machine (e.g. cc-wi)
  *   9. PR Dashboard Commenters — commenters' photos + hover previews of new comments and unresolved threads on My pull requests
  *  10. PR Claude Sessions — the PR's claude.ai session links + a resume-locally launcher in its side pane
+ *  11. Send to Claude Code — a button on each PR comment thread that hands it to a local Claude Code session
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -2828,6 +2829,108 @@
   }
 
   // ============================================================
+  // Feature 11: Send to Claude Code
+  // A ">_" button in each PR comment thread's header hands the thread to a
+  // launcher on the user's machine (see createLauncher), with {org}, {project},
+  // {repo}, {id} (the PR) and {thread} filled in, prefilled with
+  // hammerspoon://cc-thread?…. Only those ids travel: the reference handler
+  // (~/.hammerspoon, see README) has cc-pr fetch the thread itself, offers the
+  // PR's Claude sessions or a new one, and sends the request to the pick.
+  // ============================================================
+  function createSendThreadToClaude() {
+    const BUTTON_CLASS = "ado-ccthread-btn"
+
+    const STYLES = `
+      .${BUTTON_CLASS} {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: 0;
+        border-radius: 2px;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+      }
+      .${BUTTON_CLASS}:hover, .${BUTTON_CLASS}.ado-launcher-open {
+        background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06));
+      }
+      .${BUTTON_CLASS}.ado-launcher-sent { color: #107c10; }
+    `
+
+    const launcher = createLauncher({
+      storageKey: "ado-claude-thread-launch-url",
+      defaultTemplate: "hammerspoon://cc-thread?org={org}&project={project}&repo={repo}&pr={id}&thread={thread}",
+      heading: "Send comment threads to Claude Code",
+      hint: (btn) => `
+        Opens a URL on your machine with <code>{org}</code>, <code>{project}</code>, <code>{repo}</code>,
+        <code>{id}</code> (the pull request) and <code>{thread}</code> (here <code>${btn.dataset.thread}</code>)
+        filled in, so a script there can hand the thread to a Claude Code session (see the Toolbox
+        README). Stored in this browser only.`,
+      fill: (template, btn) =>
+        ["org", "project", "repo", "thread"].reduce(
+          (url, key) => url.replaceAll(`{${key}}`, encodeURIComponent(btn.dataset[key])),
+          template.replaceAll("{id}", encodeURIComponent(btn.dataset.pr))
+        ),
+      tooltip: (btn, configured) =>
+        "Send this thread to Claude Code\n" +
+        (configured ? "(Right-click to change the launcher)" : "(Click to set up the launcher)"),
+    })
+
+    // The thread's id: its reply box carries it as a class; a resolved thread has
+    // no reply box, so fall back to the id React passes the thread component.
+    function threadIdOf(thread) {
+      const reply = thread.querySelector('[class*="threadId-"]')
+      const match = reply && reply.className.match(/threadId-(\d+)/)
+      if (match) return match[1]
+      const key = Object.keys(thread).find((k) => k.startsWith("__reactFiber"))
+      for (let fiber = key && thread[key], i = 0; fiber && i < 25; fiber = fiber.return, i++) {
+        const props = fiber.memoizedProps
+        const id = props && (props.threadId ?? (props.thread && props.thread.id))
+        if (id) return String(id)
+      }
+      return null
+    }
+
+    // dev.azure.com/{org}/{project}/… or {org}.visualstudio.com/[{collection}/]{project}/…
+    function orgAndProject(prefix) {
+      const segments = prefix.split("/").filter(Boolean).map(decodeURIComponent)
+      const org = location.hostname.toLowerCase() === "dev.azure.com" ? segments[0] : location.hostname.split(".")[0]
+      return { org, project: segments[segments.length - 1] }
+    }
+
+    function processThreads() {
+      const info = currentPrInfo()
+      if (!info) return
+      const { org, project } = orgAndProject(info.prefix)
+      document.querySelectorAll(".repos-discussion-thread").forEach((thread) => {
+        if (thread.querySelector(`.${BUTTON_CLASS}`)) return
+        // The first comment's header holds the thread's own actions (Copy link,
+        // its status) on the right.
+        const actions = thread.querySelector(".repos-discussion-comment-header > .justify-end")
+        const id = threadIdOf(thread)
+        if (!actions || !id) return
+        const btn = document.createElement("button")
+        btn.type = "button"
+        btn.className = BUTTON_CLASS
+        btn.setAttribute("aria-label", "Send this thread to Claude Code")
+        Object.assign(btn.dataset, { org, project, repo: decodeURIComponent(info.repo), pr: info.prId, thread: id })
+        launcher.attach(btn)
+        actions.insertBefore(btn, actions.firstChild)
+      })
+    }
+
+    return {
+      name: "Send to Claude Code",
+      match: (url) => url.includes("/pullrequest/"),
+      init() { injectStyle(STYLES) },
+      process: processThreads,
+    }
+  }
+
+  // ============================================================
   // Controller
   // ============================================================
   const FEATURES = [
@@ -2841,6 +2944,7 @@
     createWorkOnInClaude(),
     createPrDashboardCommenters(),
     createPrClaudeSessions(),
+    createSendThreadToClaude(),
   ]
 
   function runFeature(f) {

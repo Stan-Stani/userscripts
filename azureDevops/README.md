@@ -4,7 +4,7 @@ A single userscript for the whole team that adds quality-of-life helpers to
 Azure DevOps pull requests and work items. Install once; it auto-updates from
 this repo.
 
-It bundles ten features, each isolated so a failure in one can't break the
+It bundles eleven features, each isolated so a failure in one can't break the
 others.
 
 > The screenshots below use placeholder data — paths, work items, and branch
@@ -280,3 +280,20 @@ hs.urlevent.bind("cc-pr", function(_, params)
   ]], id, branch))
 end)
 ```
+
+---
+
+## 11. Send to Claude Code
+
+A `>_` button in each PR comment thread's header hands the thread to a launcher
+on your machine, like *Work on in Claude*: the first click sets up a URL
+template with `{org}`, `{project}`, `{repo}`, `{id}` (the PR) and `{thread}`
+(default `hammerspoon://cc-thread?…`). Only those ids leave the browser.
+
+The reference handler uses [`cc-pr`](cc-pr): `--thread-context` fetches the
+thread (with `AZDO_PAT` or your `az` login) and writes it, with instructions, to
+a file; `--list` finds the PR's Claude sessions; a Hammerspoon chooser offers
+them plus a new session (`--start`), and picking one is the confirmation. The
+pick gets a one-line request pointing at the file. The session is told not to
+reply on the PR or resolve the thread without asking, since anything posted
+there posts as you.
