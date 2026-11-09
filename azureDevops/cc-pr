@@ -7,6 +7,9 @@
 #   cc-pr [--bg [--no-attach]] --open <transcript>       resume that session here
 #   cc-pr --list <pr-id> [source-branch]   print the matches for another picker:
 #                                          transcript, title, cwd, mtime, live (tab-separated)
+#   cc-pr --thread-context <org> <project> <repo> <pr-id> <thread-id>
+#                                          write a PR comment thread to a file for a session
+#   cc-pr --start <name> <prompt>          start a new background session on a prompt
 #
 # --bg makes the session a background agent (`claude agents` lists it) and attaches
 # this terminal to it, instead of a plain `claude --resume`. A session that is already
@@ -29,10 +32,16 @@
 #   CC_PR_EXCLUDE_TITLE  sessions whose title matches this (extended regex, any case)
 #                   are skipped; default: Claude Bridge's own sessions, "Teams: …",
 #                   and sessions about it, "claude bridge …". Empty skips nothing.
+#   CC_PR_START_DIR  where --start runs the new session (default: ~)
+#   AZDO_PAT        Azure DevOps token for --thread-context (default: an `az` login)
+#
+# --thread-context prints "<file>\t<first comment, shortened>\t<PR title>\t<branch>";
+# the file holds the PR, the thread's comments and what to do with them. --start
+# reports the new session like --no-attach.
 set -euo pipefail
 
 usage() {
-  sed -n '6,9p' "$0" | sed 's/^#   //' >&2
+  sed -n '6,12p' "$0" | sed 's/^#   //' >&2
   exit 2
 }
 
@@ -76,6 +85,8 @@ while [ $# -gt 0 ]; do
     --bg) bg=1; shift ;;
     --no-attach) bg=1; no_attach=1; shift ;;
     --list) mode=list; shift ;;
+    --thread-context) mode=thread; shift; break ;;
+    --start) mode=start; shift; break ;;
     --open) mode=open; open_file=${2:-}; shift 2 || usage ;;
     --preview)
       # fzf's preview pane
@@ -93,6 +104,61 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
+
+if [ "$mode" = thread ]; then
+  org=${1:-} project=${2:-} repo=${3:-} pr=${4:-} thread=${5:-}
+  [[ $org =~ ^[A-Za-z0-9-]+$ && $project =~ ^[A-Za-z0-9._\ -]+$ && $repo =~ ^[A-Za-z0-9._-]+$ ]] || usage
+  [[ $pr =~ ^[0-9]+$ && $thread =~ ^[0-9]+$ ]] || usage
+  if [ -n "${AZDO_PAT:-}" ]; then
+    auth="Basic $(printf ':%s' "$AZDO_PAT" | base64 | tr -d '\n')"
+  else
+    token=$(az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 \
+      --query accessToken -o tsv 2>/dev/null) || { echo "cc-pr: no AZDO_PAT and no az login" >&2; exit 1; }
+    auth="Bearer $token"
+  fi
+  project_path=$(jq -rn --arg p "$project" '$p | @uri')
+  api="https://dev.azure.com/$org/$project_path/_apis/git/repositories/$repo/pullRequests/$pr"
+  web="https://dev.azure.com/$org/$project_path/_git/$repo/pullrequest/$pr?discussionId=$thread"
+  dir=${XDG_CACHE_HOME:-$HOME/.cache}/cc-pr
+  mkdir -p "$dir"
+  # The token goes to curl on stdin, not in its arguments where ps would show it.
+  get() { printf 'Authorization: %s\n' "$auth" | curl -sf -H @- "$1"; }
+  get "$api?api-version=7.1" >"$dir/.pr.json" || { echo "cc-pr: couldn't read PR $pr" >&2; exit 1; }
+  get "$api/threads/$thread?api-version=7.1" >"$dir/.thread.json" ||
+    { echo "cc-pr: couldn't read thread $thread on PR $pr" >&2; exit 1; }
+  file="$dir/pr-$pr-thread-$thread.md"
+  jq -rn --slurpfile pr "$dir/.pr.json" --slurpfile t "$dir/.thread.json" --arg web "$web" '
+    $pr[0] as $p | $t[0] as $t | ($t.threadContext // {}) as $ctx
+    | "# PR !\($p.pullRequestId): \($p.title)\n\n\($web)\n\n"
+      + "Branch: \($p.sourceRefName | sub("^refs/heads/"; "")) into \($p.targetRefName | sub("^refs/heads/"; ""))\n"
+      + (if $ctx.filePath then "Thread on \($ctx.filePath):\($ctx.rightFileStart.line // $ctx.leftFileStart.line // "?")"
+         else "A general comment thread" end)
+      + ", status \($t.status // "none")\n\n## Comments\n\n"
+      + ([$t.comments[] | select(.commentType == "text" and (.isDeleted | not))
+          | "**\(.author.displayName)**, \(.publishedDate[0:16] | sub("T"; " ")) UTC\n\n\(.content)\n"] | join("\n"))
+      + "\n## What to do\n\nDo what this comment thread asks, on the PR source branch. Do not reply on the PR, "
+      + "resolve the thread or change its status without asking me first: anything posted there posts as me. "
+      + "When you are done, tell me what you did and suggest a reply.\n"' >"$file"
+  summary=$(jq -r '[.comments[] | select(.commentType == "text" and (.isDeleted | not))][0]
+    | "\(.author.displayName): \(.content | gsub("\\s+"; " ") | .[0:90])"' "$dir/.thread.json")
+  printf '%s\t%s\t%s\t%s\n' "$file" "$summary" "$(jq -r .title "$dir/.pr.json")" \
+    "$(jq -r '.sourceRefName | sub("^refs/heads/"; "")' "$dir/.pr.json")"
+  rm -f "$dir/.pr.json" "$dir/.thread.json"
+  exit 0
+fi
+
+if [ "$mode" = start ]; then
+  name=${1:-} prompt=${2:-}
+  [ -n "$name" ] && [ -n "$prompt" ] || usage
+  cd "${CC_PR_START_DIR:-$HOME}"
+  # shellcheck disable=SC2086 # CC_PR_CLAUDE is a command plus flags
+  out=$(${CC_PR_CLAUDE:-claude} --bg -n "$name" "$prompt" 2>&1) || { echo "cc-pr: $out" >&2; exit 1; }
+  short=$(printf '%s\n' "$out" | rg -o 'backgrounded · ([0-9a-f]+)' -r '$1' | head -1)
+  [ -n "$short" ] || { echo "cc-pr: $out" >&2; exit 1; }
+  echo "cc-pr: started in the background" >&2
+  printf '%s\t%s\n' "$short" "$name"
+  exit 0
+fi
 
 if [ "$mode" = open ]; then
   [ -f "$open_file" ] && [[ $open_file == *.jsonl ]] || { echo "cc-pr: no transcript at $open_file" >&2; exit 1; }
