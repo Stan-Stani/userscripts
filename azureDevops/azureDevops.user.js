@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-09.1
+// @version      2026-11-09.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, and a send-to-Claude-Code button on PR comment threads.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -1877,6 +1877,11 @@
         text-decoration: none;
       }
       .${STACK_CLASS}-hidden { display: none !important; }
+      /* ADO draws an unread row with a bold title and a coloured bar on its left
+         (bolt-list-row-marked: its first cell's left border); a row marked as
+         viewed drops both. The border keeps its width so nothing shifts. */
+      .${STACK_CLASS}-viewed-row .font-weight-semibold { font-weight: normal !important; }
+      .${STACK_CLASS}-viewed-row .bolt-list-cell:first-child { border-left-color: transparent !important; }
       .${STACK_CLASS}-viewed {
         color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
         white-space: nowrap;
@@ -2473,13 +2478,15 @@
       })
     }
 
-    // ADO's "N new comments" line, swapped for a note once marked as viewed.
+    // ADO's "N new comments" line, swapped for a note once marked as viewed, and
+    // the row drawn as read.
     function showViewed(textNode) {
       const line = textNode.parentElement
       line.classList.add(`${STACK_CLASS}-hidden`)
       if (!line.parentElement.querySelector(`.${STACK_CLASS}-viewed`)) {
         line.parentElement.insertBefore(el("span", `${STACK_CLASS}-viewed`, "Marked as viewed"), line)
       }
+      line.closest('[role="row"]')?.classList.add(`${STACK_CLASS}-viewed-row`)
     }
 
     function processUpdatesCells() {
