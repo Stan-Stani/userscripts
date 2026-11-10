@@ -1,13 +1,19 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-09.2
-// @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, and a send-to-Claude-Code button on PR comment threads.
+// @version      2026-11-10.1
+// @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
 // @match        https://*.visualstudio.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=visualstudio.com
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
+// @grant        GM_notification
 // @connect      127.0.0.1
 // @downloadURL  https://raw.githubusercontent.com/Stan-Stani/userscripts/main/azureDevops/azureDevops.user.js
 // @updateURL    https://raw.githubusercontent.com/Stan-Stani/userscripts/main/azureDevops/azureDevops.user.js
@@ -30,6 +36,7 @@
  *   9. PR Dashboard Commenters — commenters' photos + hover previews of new comments and unresolved threads on My pull requests
  *  10. PR Claude Sessions — the PR's claude.ai session links + a resume-locally launcher in its side pane
  *  11. Send to Claude Code — a button on each PR comment thread that hands it to a local Claude Code session
+ *  12. PR Review Clock  — opt-in timer for your time reviewing a PR (Tampermonkey menu → "Review clock: turn on")
  *
  * To add a feature: write a create*() factory returning
  *   { name, match(url), init?(), process?() }
@@ -2938,6 +2945,847 @@
   }
 
   // ============================================================
+  // Feature 12: PR Review Clock
+  // Times how long you spend reviewing a PR. Off until turned on from the
+  // Tampermonkey menu ("Review clock: turn on"); off, it does nothing at all.
+  // On a PR you're a reviewer of (not its author) it starts by itself on your
+  // first scroll, click or key in Files; a chip before the vote button shows
+  // it. Only active time counts:
+  //   - no keyboard or mouse anywhere on the Mac for 5 min pauses it, and on
+  //     your return you drop the gap, count it, or stop where it began;
+  //   - at 60 min, then every 30, or after 20 min without the PR in front of
+  //     you, it asks "still reviewing?" and stays paused until you answer;
+  //   - voting (or Stop and log) offers to log the time, your vote the outcome.
+  // Its state is shared by every ADO tab, so one clock runs at a time.
+  // Logged reviews go to a local service (Stan's ado-pr-redirector, see
+  // README): GET /idle gives the Mac's idle time, GET/POST /review-sessions
+  // keeps the log. Without it the clock runs but can't tell you're away, and
+  // logged time waits in this browser until the service answers.
+  // ============================================================
+  function createReviewClock() {
+    const HUB = "http://127.0.0.1:47811"
+    const K = {
+      on: "ado-rc-enabled",
+      state: "ado-rc-state",
+      box: "ado-rc-box-min",
+      skip: "ado-rc-skip",
+      queue: "ado-rc-unsent",
+    }
+    const AWAY_S = 5 * 60
+    const STILL_FIRST_S = 60 * 60
+    const STILL_EVERY_S = 30 * 60
+    const OFF_PR_MS = 20 * 60 * 1000
+    // No tab checked for this long (asleep, or every ADO tab closed): ask.
+    const UNWATCHED_MS = 3 * 60 * 1000
+    const CHECK_MS = 15 * 1000
+    const VOTE_POLL_MS = 60 * 1000
+    const VOTES = { 10: "Approved", 5: "Approved with suggestions", "-5": "Waited for author", "-10": "Rejected" }
+    const VOTE_ACTION = /^(approve|approve with suggestions|wait for author|reject)$/i
+    const CHIP = "ado-rc-chip"
+    const POP = "ado-rc-pop"
+
+    // --- storage: GM storage, shared live by every ADO tab ---
+    const HAS_GM = typeof GM_getValue === "function" && typeof GM_setValue === "function"
+    function read(key, fallback) {
+      try {
+        if (HAS_GM) return GM_getValue(key, fallback)
+        const raw = localStorage.getItem(key)
+        return raw == null ? fallback : JSON.parse(raw)
+      } catch {
+        return fallback
+      }
+    }
+    function write(key, value) {
+      try {
+        if (HAS_GM) GM_setValue(key, value)
+        else localStorage.setItem(key, JSON.stringify(value))
+      } catch (e) {
+        console.error("[ADO Toolbox] Review clock couldn't save:", e)
+      }
+    }
+    function onOtherTabWrite(key, fn) {
+      if (typeof GM_addValueChangeListener === "function") {
+        GM_addValueChangeListener(key, (_key, _old, value, remote) => remote && fn(value))
+      } else {
+        window.addEventListener("storage", (e) => e.key === key && fn(e.newValue == null ? null : JSON.parse(e.newValue)))
+      }
+    }
+
+    function hub(method, path, body) {
+      return new Promise((resolve, reject) => {
+        if (typeof GM_xmlhttpRequest !== "function") return reject(new Error("GM_xmlhttpRequest unavailable"))
+        GM_xmlhttpRequest({
+          method,
+          url: HUB + path,
+          timeout: 4000,
+          headers: body ? { "Content-Type": "application/json", "X-ADO-Toolbox": "1" } : {},
+          data: body ? JSON.stringify(body) : undefined,
+          onload: (r) => {
+            if (r.status !== 200) return reject(new Error(`${r.status} from ${path}`))
+            try {
+              resolve(JSON.parse(r.responseText))
+            } catch (e) {
+              reject(e)
+            }
+          },
+          onerror: () => reject(new Error("local service unreachable")),
+          ontimeout: () => reject(new Error("local service timed out")),
+        })
+      })
+    }
+    async function idleSeconds() {
+      try {
+        const { idle } = await hub("GET", "/idle")
+        return Number.isFinite(idle) ? idle : null
+      } catch {
+        return null
+      }
+    }
+
+    // --- a review's time: [start, end] spans in ms; the last is open (end null)
+    // while the clock runs ---
+    const Spans = {
+      total: (spans, now) => spans.reduce((t, [a, b]) => t + Math.max(0, (b ?? now) - a), 0),
+      running: (spans) => spans.length > 0 && spans[spans.length - 1][1] == null,
+      // End the open span at `at`, never before it began.
+      close: (spans, at) => spans.map(([a, b]) => (b == null ? [a, Math.max(a, at)] : [a, b])),
+      // Run again from `from`; a `from` no later than the last span's end
+      // continues that span, which counts the gap in between.
+      open: (spans, from) => {
+        const done = Spans.close(spans, from)
+        const last = done[done.length - 1]
+        return last && from <= last[1] ? [...done.slice(0, -1), [last[0], null]] : [...done, [from, null]]
+      },
+      // Drop all time after `at`.
+      cut: (spans, at) => spans.filter(([a]) => a < at).map(([a, b]) => [a, Math.min(b ?? at, at)]),
+    }
+
+    const load = () => read(K.state, null)
+    const activeSecs = (s, now = Date.now()) => Math.floor(Spans.total(s.spans, now) / 1000)
+    const boxSecs = () => Math.max(1, Number(read(K.box, 30)) || 30) * 60
+    const clock = (secs) => {
+      const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), sec = secs % 60
+      const pad = (n) => String(n).padStart(2, "0")
+      return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`
+    }
+    const mins = (secs) => {
+      const m = Math.round(secs / 60)
+      return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`
+    }
+    const at = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36) + Date.now().toString(36)).replace(/[^a-z0-9]/gi, "").slice(0, 20)
+
+    // --- the PR on this page ---
+    function prHere() {
+      const info = currentPrInfo()
+      if (!info) return null
+      const { org, project } = orgAndProject(info.prefix)
+      return { ...info, org, project, repoName: decodeURIComponent(info.repo), key: `${info.prefix}|${info.repo}|${info.prId}` }
+    }
+    const orgUrl = (p) =>
+      location.hostname.toLowerCase() === "dev.azure.com" ? `${location.origin}/${p.prefix.split("/").filter(Boolean)[0]}` : location.origin
+    let myId = null
+    const facts = new Map() // PR key → Promise<{ title, author, reviewer, vote }>
+    function prFacts(p, fresh) {
+      if (fresh || !facts.has(p.key)) {
+        const job = (async () => {
+          if (!myId) myId = (await fetchJson(`${orgUrl(p)}/_apis/connectionData`)).authenticatedUser.id
+          const pr = await fetchJson(`${location.origin}${p.prefix}/_apis/git/repositories/${p.repo}/pullRequests/${p.prId}?api-version=7.1`)
+          const mine = pr.reviewers.find((r) => r.id === myId)
+          return { title: pr.title, author: pr.createdBy.id === myId, reviewer: !!mine, vote: mine ? mine.vote : 0 }
+        })()
+        job.catch(() => facts.delete(p.key))
+        facts.set(p.key, job)
+      }
+      return facts.get(p.key)
+    }
+    const known = new Map() // PR key → settled facts, for synchronous rendering
+    const reading = new Set() // PR keys whose facts are loading (a failed read isn't retried until reload)
+    const sessionsFor = (p) => hub("GET", `/review-sessions?repo=${encodeURIComponent(p.repo)}&pr=${p.id}`)
+
+    // --- state changes ---
+    let enabled = false
+    let starting = false
+    function save(s) {
+      write(K.state, s)
+      render()
+    }
+    async function start(p) {
+      if (starting || load()) return
+      starting = true
+      try {
+        const f = await prFacts(p).catch(() => null)
+        const pr = { prefix: p.prefix, org: p.org, project: p.project, repo: p.repoName, id: Number(p.prId), title: f ? f.title : "", key: p.key }
+        const past = await sessionsFor(pr).catch(() => [])
+        if (load()) return
+        const now = Date.now()
+        save({ pr, spans: [[now, null]], prompt: null, notice: null, overShown: false, nextStill: STILL_FIRST_S,
+          lastOnPr: now, lastCheck: now, vote: f ? f.vote : 0, pass: past.length + 1, firstPass: past[0] || null })
+      } finally {
+        starting = false
+      }
+    }
+    function pause(s, prompt, when) {
+      s.spans = Spans.close(s.spans, when)
+      s.prompt = prompt
+      save(s)
+      openPop(true)
+      if (document.hidden && typeof GM_notification === "function") {
+        const text = prompt.kind === "log" ? `Log your time on !${s.pr.id}?` : prompt.kind === "idle" ? "Paused while you were away." : `Still reviewing !${s.pr.id}?`
+        GM_notification({ title: "Review clock", text, timeout: 0, onclick: () => window.focus() })
+      }
+    }
+    function resume(s, from) {
+      s.spans = Spans.open(s.spans, from)
+      s.prompt = null
+      s.lastCheck = Date.now()
+      s.lastOnPr = Date.now()
+      save(s)
+    }
+    function askToLog(s, outcome) {
+      pause(s, { kind: "log", outcome: outcome || "" }, Date.now())
+    }
+    async function postSession(session) {
+      try {
+        await hub("POST", "/review-sessions", { op: "put", session })
+        return true
+      } catch {
+        write(K.queue, [...read(K.queue, []), session].slice(-50))
+        return false
+      }
+    }
+    let lastFlush = 0
+    async function flushQueue() {
+      const queue = read(K.queue, [])
+      if (!queue.length || Date.now() - lastFlush < 5 * 60 * 1000) return
+      lastFlush = Date.now()
+      const left = []
+      for (const session of queue) {
+        try {
+          await hub("POST", "/review-sessions", { op: "put", session })
+        } catch {
+          left.push(session)
+        }
+      }
+      write(K.queue, left)
+    }
+    function sessionOf(s, seconds, outcome, note) {
+      const spans = Spans.close(s.spans, Date.now())
+      return { id: newId(), org: s.pr.org, project: s.pr.project, repo: s.pr.repo, pr: s.pr.id, title: s.pr.title,
+        start: spans[0][0], end: spans[spans.length - 1][1], seconds, outcome, pass: s.pass, note }
+    }
+
+    // --- the checks, every CHECK_MS in each ADO tab while on ---
+    let lastVotePoll = 0
+    let voteClickAt = 0
+    let checking = false
+    async function check() {
+      if (!enabled || checking) return
+      checking = true
+      try {
+        flushQueue()
+        const first = load()
+        if (!first) return
+        const here = prHere()
+        const onIt = !!here && here.key === first.pr.key && !document.hidden && document.hasFocus()
+        // Gather what needs the network first, then apply it to fresh state.
+        const idle = Spans.running(first.spans) || (first.prompt?.kind === "idle" && !first.prompt.to) ? await idleSeconds() : null
+        let vote = null
+        const clicked = Date.now() - voteClickAt < 15000
+        if (Spans.running(first.spans) && (clicked || Date.now() - lastVotePoll > VOTE_POLL_MS)) {
+          lastVotePoll = Date.now()
+          const p = { prefix: first.pr.prefix, repo: encodeURIComponent(first.pr.repo), prId: String(first.pr.id), key: first.pr.key }
+          vote = await prFacts(p, true).then((f) => f.vote, () => null)
+        }
+        const s = load()
+        if (!s || s.pr.key !== first.pr.key) return
+        const now = Date.now()
+        if (onIt) s.lastOnPr = now
+        if (!Spans.running(s.spans)) {
+          if (s.prompt?.kind === "idle" && !s.prompt.to && idle != null && idle < 60) {
+            s.prompt.to = now - idle * 1000
+            save(s)
+          }
+          return
+        }
+        if (now - s.lastCheck > UNWATCHED_MS) return pause(s, { kind: "still", at: s.lastCheck, lastOnPr: Math.min(s.lastOnPr, s.lastCheck) }, s.lastCheck)
+        s.lastCheck = now
+        if (idle != null && idle >= AWAY_S) {
+          const from = Math.max(now - idle * 1000, s.spans[0][0])
+          return pause(s, { kind: "idle", from, to: null }, from)
+        }
+        if (vote != null) {
+          // A reset (0) isn't a vote; a repeat of the same vote is, if it was clicked.
+          const voted = vote !== 0 && (vote !== s.vote || clicked)
+          s.vote = vote
+          if (voted) {
+            voteClickAt = 0
+            return askToLog(s, VOTES[vote])
+          }
+        }
+        const secs = activeSecs(s, now)
+        if (secs >= s.nextStill || now - s.lastOnPr >= OFF_PR_MS) {
+          return pause(s, { kind: "still", at: now, lastOnPr: s.lastOnPr }, now)
+        }
+        if (secs >= boxSecs() && !s.overShown) {
+          s.overShown = true
+          s.notice = "over"
+          chime()
+          save(s)
+          return openPop(true)
+        }
+        save(s)
+      } catch (e) {
+        console.error("[ADO Toolbox] Review clock check failed:", e)
+      } finally {
+        checking = false
+      }
+    }
+
+    // --- page activity: starts the clock, and marks you on the PR ---
+    let audio = null
+    function onActivity(e) {
+      if (!enabled || !e.isTrusted) return
+      try {
+        audio = audio || new (window.AudioContext || window.webkitAudioContext)()
+        if (audio.state === "suspended") audio.resume()
+      } catch {}
+      const p = prHere()
+      if (!p) return
+      const s = load()
+      if (s) {
+        if (s.pr.key === p.key && Spans.running(s.spans) && Date.now() - s.lastOnPr > 10000) {
+          s.lastOnPr = Date.now()
+          write(K.state, s)
+        }
+        return
+      }
+      const f = known.get(p.key)
+      const inFiles = new URLSearchParams(location.search).get("_a") === "files"
+      if (f && f.reviewer && !f.author && inFiles && !read(K.skip, []).includes(p.key)) start(p)
+    }
+    function onVoteClick(e) {
+      if (!enabled) return
+      const t = e.target instanceof Element ? e.target : null
+      if (!t) return
+      const main = t.closest(".repos-pr-header-vote-button .bolt-split-button-main")
+      const item = t.closest('[role="menuitem"], .bolt-menuitem-row')
+      if (main || (item && VOTE_ACTION.test(item.textContent.trim()))) {
+        voteClickAt = Date.now()
+        setTimeout(check, 2500)
+        setTimeout(check, 7000)
+      }
+    }
+    function chime() {
+      if (!audio) return
+      try {
+        const t = audio.currentTime
+        for (const [dt, f] of [[0, 660], [0.2, 880]]) {
+          const o = audio.createOscillator(), g = audio.createGain()
+          o.frequency.value = f
+          g.gain.setValueAtTime(0.0001, t + dt)
+          g.gain.exponentialRampToValueAtTime(0.18, t + dt + 0.02)
+          g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.4)
+          o.connect(g)
+          g.connect(audio.destination)
+          o.start(t + dt)
+          o.stop(t + dt + 0.45)
+        }
+      } catch {}
+    }
+
+    // --- UI ---
+    const STYLES = `
+      .${CHIP} { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; margin-right: 8px;
+        border-radius: 4px; border: 1px solid #c8c6c4; background: #fff; color: rgba(0,0,0,.9); font: inherit; font-size: 13px;
+        cursor: pointer; white-space: nowrap; flex-shrink: 0; align-self: center; }
+      .${CHIP}:hover { background: #f3f2f1; }
+      .${CHIP} b { font-weight: 600; font-variant-numeric: tabular-nums; }
+      .${CHIP} .ado-rc-dim { color: #605e5c; }
+      .${CHIP}.ado-rc-armed { border-color: #0078d4; background: #eff6fc; color: #004578; font-weight: 600; }
+      .${CHIP}.ado-rc-over { border-color: #e0b252; background: #fff4ce; color: #5c3b00; }
+      .${CHIP}.ado-rc-ask { border-color: #0078d4; background: #eff6fc; color: #004578; }
+      .${CHIP}.ado-rc-paused { background: #f3f2f1; }
+      .${CHIP}.ado-rc-elsewhere { border-style: dashed; border-color: #8a8886; }
+      .${POP} { position: fixed; z-index: 100000; width: 340px; box-sizing: border-box; background: #fff; color: rgba(0,0,0,.9);
+        border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.06); padding: 16px;
+        display: flex; flex-direction: column; gap: 12px; font-family: "Segoe UI", -apple-system, system-ui, sans-serif; font-size: 13.5px; }
+      .${POP} h3 { margin: 0; font-size: 15px; font-weight: 600; }
+      .${POP} p { margin: 0; line-height: 1.45; }
+      .${POP} .ado-rc-sub { color: #605e5c; font-size: 13px; }
+      .${POP} .ado-rc-foot { color: #605e5c; font-size: 12.5px; line-height: 1.45; border-top: 1px solid #edebe9; padding-top: 8px;
+        display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+      .${POP} .ado-rc-big { font-size: 32px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+      .${POP} .ado-rc-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .${POP} .ado-rc-col { display: flex; flex-direction: column; gap: 6px; }
+      .${POP} button { font: inherit; font-size: 13px; min-height: 32px; padding: 0 12px; border-radius: 4px; cursor: pointer;
+        border: 1px solid #c8c6c4; background: #fff; color: rgba(0,0,0,.9); }
+      .${POP} button:hover { background: #f3f2f1; }
+      .${POP} button.ado-rc-primary { border-color: #0078d4; background: #0078d4; color: #fff; font-weight: 600; }
+      .${POP} button.ado-rc-primary:hover { background: #106ebe; }
+      .${POP} button.ado-rc-ghost { border-color: transparent; background: transparent; color: #605e5c; }
+      .${POP} button.ado-rc-link { border: 0; background: none; color: #005a9e; padding: 0 4px; min-height: 28px; }
+      .${POP} .ado-rc-col button { text-align: left; min-height: 36px; }
+      .${POP} .ado-rc-bar { height: 6px; border-radius: 3px; background: #edebe9; overflow: hidden; }
+      .${POP} .ado-rc-bar > i { display: block; height: 100%; background: #0078d4; border-radius: 3px; }
+      .${POP} .ado-rc-line { display: flex; height: 12px; gap: 2px; }
+      .${POP} .ado-rc-line > i { border-radius: 2px; background: #0078d4; min-width: 2px; }
+      .${POP} .ado-rc-line > i.ado-rc-gap { background: repeating-linear-gradient(135deg, #e1dfdd 0 4px, #f3f2f1 4px 8px); }
+      .${POP} .ado-rc-ticks { display: flex; justify-content: space-between; font-size: 12px; color: #605e5c; font-variant-numeric: tabular-nums; }
+      .${POP} .ado-rc-grid { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 6px 10px; align-items: baseline; }
+      .${POP} .ado-rc-grid > span:nth-child(odd), .${POP} label { color: #605e5c; }
+      .${POP} input { font: inherit; font-size: 13.5px; padding: 5px 8px; border: 1px solid #c8c6c4; border-radius: 4px; min-width: 0; color: rgba(0,0,0,.9); }
+      .${POP} .ado-rc-hist { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+      .${POP} .ado-rc-hist > span:first-child, .${POP} .ado-rc-hist .ado-rc-when { color: #605e5c; }
+      .${POP} .ado-rc-err { color: #a4262c; font-size: 12.5px; }
+    `
+
+    function el(tag, attrs, ...kids) {
+      const node = document.createElement(tag)
+      for (const [k, v] of Object.entries(attrs || {})) {
+        if (v == null || v === false) continue
+        if (k === "class") node.className = v
+        else if (k.startsWith("on")) node.addEventListener(k.slice(2), v)
+        else node.setAttribute(k, v === true ? "" : String(v))
+      }
+      for (const kid of kids.flat()) if (kid != null && kid !== false) node.append(kid.nodeType ? kid : document.createTextNode(String(kid)))
+      return node
+    }
+    const btn = (label, onclick, cls) => el("button", { type: "button", class: cls, onclick }, label)
+    function ring(frac, color, inner) {
+      const C = 43.98
+      return `<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="7" fill="none" stroke="#e1dfdd" stroke-width="2.5"/>${
+        frac > 0 ? `<circle cx="9" cy="9" r="7" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${(Math.min(frac, 1) * C).toFixed(1)} 44" transform="rotate(-90 9 9)"/>` : ""
+      }${inner || ""}</svg>`
+    }
+    const PLAY = '<path d="M7.5 6.3v5.4l4-2.7z" fill="currentColor"/>'
+    const PAUSE = '<path d="M7.4 6.4v5.2M10.6 6.4v5.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'
+
+    // What the chip shows: { cls, html, label }, or null for no chip.
+    function chipView(s, p, f) {
+      if (!s) {
+        if (!f || f.author) return null
+        return { cls: "ado-rc-armed", html: `${ring(0, "", PLAY)}Review clock`, label: "Review clock" }
+      }
+      const secs = activeSecs(s)
+      if (s.pr.key !== p.key) {
+        return { cls: "ado-rc-elsewhere", html: `${ring(secs / boxSecs(), "#0078d4")}<span class="ado-rc-dim">On !${s.pr.id}</span><b>${clock(secs)}</b>`,
+          label: `Review clock is on PR ${s.pr.id}` }
+      }
+      if (s.prompt) {
+        const word = s.prompt.kind === "log" ? "log time?" : s.prompt.kind === "still" ? "still there?" : "away"
+        return { cls: "ado-rc-ask", html: `${ring(secs / boxSecs(), "#0078d4", PAUSE)}<b>${clock(secs)}</b><span>${word}</span>`, label: `Review clock paused: ${word}` }
+      }
+      if (!Spans.running(s.spans)) {
+        return { cls: "ado-rc-paused", html: `${ring(secs / boxSecs(), "#8a8886", PAUSE)}<b>${clock(secs)}</b><span class="ado-rc-dim">paused</span>`, label: "Review clock paused" }
+      }
+      const over = secs - boxSecs()
+      if (over > 0) {
+        return { cls: "ado-rc-over", html: `${ring(1, "#c27c00")}<b>${clock(secs)}</b><span>+${mins(over)}</span>`, label: `Review clock, ${mins(over)} over the box` }
+      }
+      return { cls: "", html: `${ring(secs / boxSecs(), "#0078d4")}<b>${clock(secs)}</b><span class="ado-rc-dim">/ ${mins(boxSecs())}</span>`,
+        label: `Review clock, ${clock(secs)} of ${mins(boxSecs())}` }
+    }
+
+    // A bar of the spans from the first start to `to`, gaps hatched.
+    function line(spans, to) {
+      const from = spans[0][0]
+      const parts = []
+      let cursor = from
+      for (const [a, b] of spans) {
+        if (a > cursor) parts.push(el("i", { class: "ado-rc-gap", style: `flex: ${a - cursor} 1 0` }))
+        parts.push(el("i", { style: `flex: ${Math.max(1, (b ?? to) - a)} 1 0` }))
+        cursor = b ?? to
+      }
+      if (to > cursor) parts.push(el("i", { class: "ado-rc-gap", style: `flex: ${to - cursor} 1 0` }))
+      return el("div", { class: "ado-rc-line", "aria-hidden": "true" }, parts)
+    }
+    const ticks = (...labels) => el("div", { class: "ado-rc-ticks" }, labels.map((l) => el("span", null, l)))
+
+    let pop = null
+    let popKey = ""
+    function closePop() {
+      pop?.remove()
+      pop = null
+      popKey = ""
+    }
+    function openPop(force) {
+      const chip = document.querySelector(`.${CHIP}`)
+      if (!chip) return
+      if (pop && !force) return closePop()
+      renderPop(true)
+    }
+    function placePop() {
+      const chip = document.querySelector(`.${CHIP}`)
+      if (!pop || !chip) return closePop()
+      const r = chip.getBoundingClientRect()
+      pop.style.top = `${Math.round(r.bottom + 6)}px`
+      pop.style.left = `${Math.max(8, Math.round(Math.min(r.right, window.innerWidth - 8) - pop.offsetWidth))}px`
+    }
+
+    // The popover's content for the current state. Its key changes only when the
+    // view must be rebuilt; the ticking numbers update in place.
+    function popView(s, p, f) {
+      if (!s) return { key: `home|${p.key}`, build: () => homeView(p, f) }
+      if (s.pr.key !== p.key) return { key: `elsewhere|${s.pr.key}`, build: () => elsewhereView(s, p) }
+      if (s.prompt) return { key: `${s.prompt.kind}|${s.prompt.to || ""}`, build: () => promptView(s) }
+      if (s.notice === "over") return { key: "over", build: () => overView(s) }
+      return { key: `run|${Spans.running(s.spans)}`, build: () => runView(s) }
+    }
+    function renderPop(create) {
+      if (!pop && !create) return
+      const p = prHere()
+      if (!p) return closePop()
+      const view = popView(load(), p, known.get(p.key))
+      if (pop && view.key === popKey) {
+        tickPop()
+        return placePop()
+      }
+      if (!pop) {
+        pop = el("div", { class: POP, role: "dialog", "aria-label": "Review clock" })
+        document.body.append(pop)
+      }
+      popKey = view.key
+      pop.replaceChildren(...[view.build()].flat().filter(Boolean))
+      tickPop()
+      placePop()
+    }
+    function tickPop() {
+      const s = load()
+      if (!pop || !s) return
+      const text = clock(activeSecs(s))
+      // Only real changes: rewriting the same text is still a DOM mutation,
+      // which reruns every feature, this one included.
+      pop.querySelectorAll("[data-rc-clock]").forEach((n) => n.textContent !== text && (n.textContent = text))
+      const bar = pop.querySelector(".ado-rc-bar > i")
+      const width = `${Math.min(100, (activeSecs(s) / boxSecs()) * 100).toFixed(1)}%`
+      if (bar && bar.style.width !== width) bar.style.width = width
+    }
+
+    function homeView(p, f) {
+      const skipped = read(K.skip, []).includes(p.key)
+      const startBtn = btn("Start now", () => start(p).then(() => renderPop()), "ado-rc-primary")
+      const head = f && f.reviewer
+        ? [el("h3", null, "You're a reviewer on this PR"),
+          el("p", null, skipped ? "It won't start by itself on this PR." : "The clock starts by itself on your first scroll, click or key in Files. Only active time counts, and it keeps counting while you test the PR somewhere else.")]
+        : [el("h3", null, "Review clock"), el("p", null, "You're not a reviewer on this PR, so it won't start by itself.")]
+      const actions = el("div", { class: "ado-rc-row" }, startBtn,
+        f && f.reviewer && !skipped && btn("Not for this PR", () => {
+          write(K.skip, [...read(K.skip, []), p.key].slice(-200))
+          closePop()
+        }))
+      const history = el("div", { class: "ado-rc-col" }, el("span", { class: "ado-rc-sub" }, "Loading your time on this PR…"))
+      loadHistory(p, history)
+      const minutes = el("input", { type: "number", min: "1", max: "600", value: "15", id: "ado-rc-add-min", style: "width: 70px" })
+      const day = el("input", { type: "date", id: "ado-rc-add-day", value: new Date().toLocaleDateString("en-CA") })
+      const addErr = el("span", { class: "ado-rc-err", role: "alert" })
+      const add = el("div", { class: "ado-rc-col" }, el("strong", null, "Forgot the clock? Add time"),
+        el("div", { class: "ado-rc-row" },
+          el("label", { for: "ado-rc-add-min" }, "Minutes"), minutes, el("label", { for: "ado-rc-add-day" }, "Day"), day,
+          btn("Add", async () => {
+            const m = Math.round(Number(minutes.value))
+            if (!(m >= 1 && m <= 600)) return (addErr.textContent = "Minutes between 1 and 600.")
+            const startMs = new Date(`${day.value || new Date().toLocaleDateString("en-CA")}T12:00:00`).getTime()
+            const pr = { org: p.org, project: p.project, repo: p.repoName, id: Number(p.prId) }
+            const past = await sessionsFor(pr).catch(() => [])
+            const ok = await postSession({ id: newId(), org: p.org, project: p.project, repo: p.repoName, pr: pr.id, title: f ? f.title : "",
+              start: startMs, end: startMs + m * 60000, seconds: m * 60, outcome: "", pass: past.length + 1, note: "", manual: true })
+            addErr.textContent = ok ? "" : "Saved in this browser; it goes to the local service once that answers."
+            loadHistory(p, history)
+          })), addErr)
+      return [...head, actions, history, add, footer()]
+    }
+    async function loadHistory(p, box) {
+      const pr = { repo: p.repoName, id: Number(p.prId) }
+      let list
+      try {
+        list = await sessionsFor(pr)
+      } catch {
+        return box.replaceChildren(el("span", { class: "ado-rc-sub" }, "Your logged time shows here when the local service is running."))
+      }
+      if (!list.length) return box.replaceChildren(el("span", { class: "ado-rc-sub" }, "No time logged on this PR yet."))
+      const rows = list.flatMap((x) => {
+        const del = btn("Delete", async () => {
+          if (del.dataset.armed !== "1") {
+            del.dataset.armed = "1"
+            del.textContent = "Confirm"
+            return
+          }
+          await hub("POST", "/review-sessions", { op: "delete", id: x.id }).catch(() => {})
+          loadHistory(p, box)
+        }, "ado-rc-link")
+        const edit = btn("Edit", () => {
+          const input = el("input", { type: "number", min: "1", max: "600", value: String(Math.round(x.seconds / 60)), style: "width: 64px", "aria-label": "Minutes" })
+          const saveBtn = btn("Save", async () => {
+            const m = Math.round(Number(input.value))
+            if (!(m >= 1 && m <= 600)) return
+            await hub("POST", "/review-sessions", { op: "put", session: { ...x, seconds: m * 60 } }).catch(() => {})
+            loadHistory(p, box)
+          }, "ado-rc-link")
+          edit.replaceWith(el("span", { class: "ado-rc-row" }, input, saveBtn))
+        }, "ado-rc-link")
+        return [el("span", { class: "ado-rc-when" }, new Date(x.start).toLocaleDateString([], { month: "short", day: "numeric" })),
+          el("b", null, mins(x.seconds)), el("span", null, x.outcome || (x.manual ? "Added by hand" : "")), el("span", null, edit, del)]
+      })
+      box.replaceChildren(el("strong", null, `Your time on !${p.prId}`), el("div", { class: "ado-rc-hist" }, rows))
+    }
+    function footer() {
+      const box = el("input", { type: "number", min: "5", max: "240", value: String(boxSecs() / 60), id: "ado-rc-box", style: "width: 56px",
+        onchange: (e) => {
+          const v = Math.round(Number(e.target.value))
+          if (v >= 5 && v <= 240) write(K.box, v)
+        } })
+      return el("div", { class: "ado-rc-foot" },
+        el("span", { class: "ado-rc-row" }, el("label", { for: "ado-rc-box" }, "Time box"), box, "min"),
+        btn("Turn the clock off", () => setEnabled(false), "ado-rc-link"))
+    }
+    function passLine(s) {
+      if (s.pass <= 1) return null
+      const f = s.firstPass
+      return el("p", null, `Pass ${s.pass} on this PR.${f ? ` The 1st was ${mins(f.seconds)} on ${new Date(f.start).toLocaleDateString([], { month: "short", day: "numeric" })}.` : ""}`)
+    }
+    function stopAndLog(s) {
+      askToLog(s, s.vote ? VOTES[s.vote] : "")
+    }
+    function discardBtn() {
+      const b = btn("Discard", () => {
+        if (b.dataset.armed !== "1") {
+          b.dataset.armed = "1"
+          b.textContent = "Discard this time?"
+          return
+        }
+        write(K.state, null)
+        closePop()
+        render()
+      }, "ado-rc-ghost")
+      return b
+    }
+    function runView(s) {
+      const running = Spans.running(s.spans)
+      return [
+        el("div", { class: "ado-rc-row", style: "justify-content: space-between" }, el("h3", null, `Reviewing !${s.pr.id}`),
+          el("span", { class: "ado-rc-sub" }, running ? `since ${at(s.spans[0][0])}` : "paused")),
+        el("div", { class: "ado-rc-row", style: "align-items: baseline" }, el("span", { class: "ado-rc-big", "data-rc-clock": "" }),
+          el("span", { class: "ado-rc-sub" }, `of your ${mins(boxSecs())} box`)),
+        el("div", { class: "ado-rc-bar" }, el("i")),
+        passLine(s),
+        el("div", { class: "ado-rc-row" },
+          btn("Stop and log", () => stopAndLog(load()), "ado-rc-primary"),
+          running
+            ? btn("Pause", () => { const x = load(); x.spans = Spans.close(x.spans, Date.now()); save(x) })
+            : btn("Resume", () => resume(load(), Date.now())),
+          discardBtn()),
+        el("p", { class: "ado-rc-foot" }, "Keeps counting on other tabs and in the terminal. Pauses after 5 minutes with no keyboard or mouse on this Mac."),
+      ]
+    }
+    function overView(s) {
+      const dismiss = () => { const x = load(); x.notice = null; save(x); closePop() }
+      return [
+        el("h3", null, `Past your ${mins(boxSecs())} box`),
+        el("p", null, "The box is a nudge, not a limit. It chimed once and won't again."),
+        el("div", { class: "ado-rc-row" }, btn("Stop and log", () => stopAndLog(load()), "ado-rc-primary"), btn("Keep going", dismiss)),
+      ]
+    }
+    function elsewhereView(s, p) {
+      const secs = activeSecs(s)
+      return [
+        el("h3", null, `The clock is on !${s.pr.id}`),
+        el("p", null, `${clock(secs)} so far${s.pr.title ? ` on ${s.pr.title}` : ""}. Move it here? That review's time is logged first, and you can go back to it later.`),
+        el("div", { class: "ado-rc-row" },
+          btn("Review this one now", async () => {
+            const old = load()
+            if (old) {
+              const done = { ...old, spans: Spans.close(old.spans, Date.now()) }
+              await postSession(sessionOf(done, activeSecs(done), old.vote ? VOTES[old.vote] : "", ""))
+              write(K.state, null)
+            }
+            await start(p)
+            renderPop()
+          }, "ado-rc-primary"),
+          btn("Just looking", closePop)),
+        el("p", { class: "ado-rc-foot" }, "One clock at a time, so no minute counts twice."),
+      ]
+    }
+    function promptView(s) {
+      const q = s.prompt
+      if (q.kind === "idle") {
+        const to = q.to || Date.now()
+        const away = Math.max(1, Math.round((to - q.from) / 60000))
+        return [
+          el("h3", null, `You were away for ${away} minute${away === 1 ? "" : "s"}`),
+          el("p", { class: "ado-rc-sub" }, `No keyboard or mouse from ${at(q.from)}${q.to ? ` to ${at(q.to)}` : " until now"}.`),
+          el("div", null, line(s.spans, to), ticks(at(s.spans[0][0]), at(q.from), at(to))),
+          el("div", { class: "ado-rc-col" },
+            btn(`Drop those ${away} minutes and carry on`, () => resume(load(), Date.now()), "ado-rc-primary"),
+            btn("Count them: I was reading or testing", () => resume(load(), q.from)),
+            btn(`Stop the review at ${at(q.from)}`, () => stopAndLog(load()))),
+          el("p", { class: "ado-rc-foot" }, "The clock stays paused until you pick one."),
+        ]
+      }
+      if (q.kind === "still") {
+        const left = q.lastOnPr < q.at - 60000
+        return [
+          el("h3", null, `Still reviewing !${s.pr.id}?`),
+          el("p", { class: "ado-rc-sub" }, `${clock(activeSecs(s))} on the clock${left ? `, and this PR hasn't been in front of you since ${at(q.lastOnPr)}` : ""}. Paused at ${at(q.at)}, when it asked.`),
+          el("div", { class: "ado-rc-col" },
+            btn("Yes, still reviewing. Count it all and carry on", () => {
+              const x = load()
+              x.nextStill = activeSecs({ spans: Spans.open(x.spans, q.at) }, Date.now()) + STILL_EVERY_S
+              resume(x, q.at)
+            }, "ado-rc-primary"),
+            btn(`No, I stopped at ${at(left ? q.lastOnPr : q.at)}`, () => {
+              const x = load()
+              x.spans = Spans.cut(x.spans, left ? q.lastOnPr : q.at)
+              if (!x.spans.length) x.spans = [[q.at, q.at]]
+              save(x)
+              stopAndLog(x)
+            })),
+          el("p", { class: "ado-rc-foot" }, "Asks at 60 minutes, then every 30, or after 20 minutes away from this PR."),
+        ]
+      }
+      // log
+      const secs = activeSecs(s)
+      const minutes = el("input", { type: "number", min: "1", max: "600", value: String(Math.max(1, Math.round(secs / 60))), id: "ado-rc-log-min", style: "width: 70px" })
+      const note = el("input", { type: "text", id: "ado-rc-log-note", maxlength: "500", placeholder: "Optional, e.g. ran it on alt ports" })
+      const err = el("span", { class: "ado-rc-err", role: "alert" })
+      const end = s.spans[s.spans.length - 1][1] ?? Date.now()
+      return [
+        el("div", { class: "ado-rc-col", style: "gap: 2px" }, el("h3", null, `Log ${mins(secs)} on !${s.pr.id}?`),
+          el("span", { class: "ado-rc-sub" }, q.outcome ? "Your vote is in. This only records your time." : "Nothing goes to the PR; this only records your time.")),
+        el("div", null, line(s.spans, end), ticks(at(s.spans[0][0]), at(end))),
+        el("div", { class: "ado-rc-grid" },
+          el("span", null, "Outcome"), el("span", null, q.outcome || "No vote"),
+          el("span", null, "Pass"), el("span", null, s.pass > 1 ? `${s.pass} on this PR` : "1st on this PR"),
+          el("label", { for: "ado-rc-log-min" }, "Minutes"), minutes,
+          el("label", { for: "ado-rc-log-note" }, "Note"), note),
+        el("div", { class: "ado-rc-row" },
+          btn("Log it", async () => {
+            const m = Math.round(Number(minutes.value))
+            if (!(m >= 1 && m <= 600)) return (err.textContent = "Minutes between 1 and 600.")
+            const x = load()
+            const seconds = m === Math.max(1, Math.round(secs / 60)) ? secs : m * 60
+            const ok = await postSession(sessionOf(x, seconds, q.outcome, note.value.trim()))
+            write(K.state, null)
+            closePop()
+            render()
+            if (!ok) console.warn("[ADO Toolbox] Review clock: local service unreachable; the session waits in this browser.")
+          }, "ado-rc-primary"),
+          btn("Keep the clock going", () => resume(load(), Date.now())),
+          discardBtn()),
+        err,
+      ]
+    }
+
+    // --- the chip ---
+    function render() {
+      if (!enabled) {
+        document.querySelector(`.${CHIP}`)?.remove()
+        return closePop()
+      }
+      const p = prHere()
+      const anchor = p && document.querySelector(".repos-pr-header-vote-button")
+      let chip = document.querySelector(`.${CHIP}`)
+      if (!anchor) {
+        chip?.remove()
+        return closePop()
+      }
+      if (!known.has(p.key) && !reading.has(p.key)) {
+        reading.add(p.key)
+        prFacts(p).then(
+          (f) => {
+            known.set(p.key, f)
+            reading.delete(p.key)
+            render()
+          },
+          (e) => console.error("[ADO Toolbox] Review clock couldn't read the PR:", e)
+        )
+      }
+      const view = chipView(load(), p, known.get(p.key))
+      if (!view) {
+        chip?.remove()
+        return closePop()
+      }
+      if (!chip || chip.nextElementSibling !== anchor) {
+        chip?.remove()
+        chip = el("button", { type: "button", class: CHIP, onclick: () => openPop(false) })
+        anchor.parentElement.insertBefore(chip, anchor)
+      }
+      const cls = `${CHIP} ${view.cls}`.trim()
+      if (chip.className !== cls) chip.className = cls
+      if (chip.dataset.html !== view.html) {
+        chip.dataset.html = view.html
+        chip.innerHTML = view.html
+      }
+      if (chip.getAttribute("aria-label") !== view.label) chip.setAttribute("aria-label", view.label)
+      renderPop(false)
+    }
+
+    let listening = false
+    let timers = []
+    function setEnabled(on) {
+      enabled = on
+      write(K.on, on)
+      registerMenu()
+      if (on) startWatching()
+      else stopWatching()
+      render()
+    }
+    function startWatching() {
+      if (!listening) {
+        listening = true
+        for (const type of ["pointerdown", "keydown", "wheel"]) document.addEventListener(type, onActivity, { capture: true, passive: true })
+        document.addEventListener("click", onVoteClick, true)
+        document.addEventListener("keydown", (e) => e.key === "Escape" && pop && closePop())
+        document.addEventListener("pointerdown", (e) => {
+          if (pop && !pop.contains(e.target) && !e.target.closest?.(`.${CHIP}`)) closePop()
+        }, true)
+        window.addEventListener("resize", placePop)
+        // A question another tab raised opens when you come back to its PR.
+        document.addEventListener("visibilitychange", () => {
+          const s = enabled && !document.hidden && load()
+          const p = s && s.prompt && prHere()
+          if (p && p.key === s.pr.key) openPop(true)
+        })
+        onOtherTabWrite(K.state, () => enabled && render())
+      }
+      if (!timers.length) timers = [setInterval(check, CHECK_MS), setInterval(() => enabled && render(), 1000)]
+      check()
+    }
+    function stopWatching() {
+      timers.forEach(clearInterval)
+      timers = []
+    }
+    let menuId = null
+    function registerMenu() {
+      if (typeof GM_registerMenuCommand !== "function") return
+      if (menuId != null && typeof GM_unregisterMenuCommand === "function") GM_unregisterMenuCommand(menuId)
+      menuId = GM_registerMenuCommand(enabled ? "Review clock: turn off" : "Review clock: turn on", () => setEnabled(!enabled))
+    }
+
+    return {
+      name: "PR Review Clock",
+      match: () => true,
+      init() {
+        injectStyle(STYLES)
+        enabled = read(K.on, false) === true
+        registerMenu()
+        onOtherTabWrite(K.on, (v) => {
+          enabled = v === true
+          registerMenu()
+          if (enabled) startWatching()
+          else stopWatching()
+          render()
+        })
+        if (enabled) startWatching()
+      },
+      process() {
+        if (enabled) render()
+      },
+      _test: { Spans },
+    }
+  }
+
+  // ============================================================
   // Controller
   // ============================================================
   const FEATURES = [
@@ -2952,6 +3800,7 @@
     createPrDashboardCommenters(),
     createPrClaudeSessions(),
     createSendThreadToClaude(),
+    createReviewClock(),
   ]
 
   function runFeature(f) {

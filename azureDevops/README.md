@@ -4,7 +4,7 @@ A single userscript for the whole team that adds quality-of-life helpers to
 Azure DevOps pull requests and work items. Install once; it auto-updates from
 this repo.
 
-It bundles eleven features, each isolated so a failure in one can't break the
+It bundles twelve features, each isolated so a failure in one can't break the
 others.
 
 > The screenshots below use placeholder data — paths, work items, and branch
@@ -297,3 +297,42 @@ them plus a new session (`--start`), and picking one is the confirmation. The
 pick gets a one-line request pointing at the file. The session is told not to
 reply on the PR or resolve the thread without asking, since anything posted
 there posts as you.
+
+---
+
+## 12. PR Review Clock
+
+Times how long you spend reviewing a PR. **Off by default**: turn it on from the
+Tampermonkey menu (**Review clock: turn on**). Off, it does nothing at all.
+
+On a PR you're a reviewer of (not its author) a chip before the vote button
+starts the clock on your first scroll, click or key in **Files**, or from its
+**Start now** button. Only active time counts:
+
+- **Away:** no keyboard or mouse anywhere on the Mac for 5 minutes pauses it.
+  When you're back you drop the gap, count it, or stop the review where it began.
+  It keeps counting while you test the PR in another tab or the terminal.
+- **Still reviewing?** At 60 minutes, then every 30, or after 20 minutes without
+  the PR in front of you, it asks, and stays paused until you answer.
+- **Time box:** past 30 minutes (changeable in its popover) the chip turns amber
+  and chimes once.
+- **Voting** offers to log the time, with your vote as the outcome; you can fix
+  the minutes and add a note. **Stop and log** does the same without a vote.
+
+The clock is shared by every ADO tab, so one runs at a time; opening another PR
+you review offers to move it there. The chip's popover lists your logged time on
+the PR, with Edit, Delete and **Add time** for a review you forgot to time.
+
+It needs a local service on `127.0.0.1:47811` (the same one as *PR Claude
+Sessions*, reached through `GM_xmlhttpRequest`):
+
+- `GET /idle` → `{ "idle": <seconds since the last keyboard or mouse input> }`
+- `GET /review-sessions[?repo=<name>&pr=<id>]` → the logged reviews
+- `POST /review-sessions` with `{ "op": "put", "session": {…} }` or
+  `{ "op": "delete", "id": "…" }`, as JSON with an `X-ADO-Toolbox: 1` header
+  (which a web page can't send without a CORS preflight the service never answers)
+
+Without it the clock still runs but can't tell when you're away, and logged
+reviews wait in the browser until the service answers. Stan's
+`ado-pr-redirector` implements these and keeps the log on disk; a nightly job
+copies it into his Judgment Log.
