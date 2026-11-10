@@ -72,6 +72,13 @@
     return { prefix, repo, prId: m[1] }
   }
 
+  // dev.azure.com/{org}/{project}/… or {org}.visualstudio.com/[{collection}/]{project}/…
+  function orgAndProject(prefix) {
+    const segments = prefix.split("/").filter(Boolean).map(decodeURIComponent)
+    const org = location.hostname.toLowerCase() === "dev.azure.com" ? segments[0] : location.hostname.split(".")[0]
+    return { org, project: segments[segments.length - 1] }
+  }
+
   async function fetchJson(url, body, method) {
     const response = await fetch(url, {
       method: method || (body ? "POST" : "GET"),
@@ -2899,13 +2906,6 @@
         if (id) return String(id)
       }
       return null
-    }
-
-    // dev.azure.com/{org}/{project}/… or {org}.visualstudio.com/[{collection}/]{project}/…
-    function orgAndProject(prefix) {
-      const segments = prefix.split("/").filter(Boolean).map(decodeURIComponent)
-      const org = location.hostname.toLowerCase() === "dev.azure.com" ? segments[0] : location.hostname.split(".")[0]
-      return { org, project: segments[segments.length - 1] }
     }
 
     function processThreads() {
