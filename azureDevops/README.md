@@ -318,6 +318,8 @@ starts the clock on your first scroll, click or key in **Files**, or from its
   and chimes once.
 - **Voting** offers to log the time, with your vote as the outcome; you can fix
   the minutes and add a note. **Stop and log** does the same without a vote.
+  A PR's logs on one day add up to one pass, unless you tick **Count as a new
+  pass**.
 
 The clock is shared by every ADO tab, so one runs at a time; opening another PR
 you review offers to move it there. The chip's popover lists your logged time on

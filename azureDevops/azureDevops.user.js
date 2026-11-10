@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-10.1
+// @version      2026-11-10.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -3119,8 +3119,9 @@
         const past = await sessionsFor(pr).catch(() => [])
         if (load()) return
         const now = Date.now()
+        const { pass, join } = passFor(past, now)
         save({ pr, spans: [[now, null]], prompt: null, notice: null, overShown: false, nextStill: STILL_FIRST_S,
-          lastOnPr: now, lastCheck: now, vote: f ? f.vote : 0, pass: past.length + 1, firstPass: past[0] || null })
+          lastOnPr: now, lastCheck: now, vote: f ? f.vote : 0, pass, sameDay: join ? join.seconds : 0, firstPass: past[0] || null })
       } finally {
         starting = false
       }
@@ -3168,6 +3169,31 @@
         }
       }
       write(K.queue, left)
+    }
+    // A PR's reviews on one day are one pass: a log adds to that day's latest
+    // pass unless asked for a new one.
+    const dayOf = (ms) => new Date(ms).toLocaleDateString("en-CA")
+    function passFor(past, when) {
+      const join = past.filter((x) => dayOf(x.start) === dayOf(when)).pop() || null
+      const next = past.reduce((n, x) => Math.max(n, x.pass || 1), 0) + 1
+      return { pass: join ? join.pass || 1 : next, join, next }
+    }
+    async function logReview(entry, newPass) {
+      const past = await sessionsFor({ repo: entry.repo, id: entry.pr }).catch(() => null)
+      // Can't see the log: it goes in as a pass of its own once the service answers.
+      if (!past) return postSession(entry)
+      const { join, next } = passFor(past, entry.start)
+      if (!join || newPass) return postSession({ ...entry, pass: next })
+      return postSession({
+        ...join,
+        title: entry.title || join.title,
+        start: Math.min(join.start, entry.start),
+        end: Math.max(join.end, entry.end),
+        seconds: Math.min(86400, join.seconds + entry.seconds),
+        outcome: entry.outcome || join.outcome,
+        note: [join.note, entry.note].filter(Boolean).join("; ").slice(0, 500),
+        manual: !!(join.manual && entry.manual),
+      })
     }
     function sessionOf(s, seconds, outcome, note) {
       const spans = Spans.close(s.spans, Date.now())
@@ -3486,10 +3512,8 @@
             const m = Math.round(Number(minutes.value))
             if (!(m >= 1 && m <= 600)) return (addErr.textContent = "Minutes between 1 and 600.")
             const startMs = new Date(`${day.value || new Date().toLocaleDateString("en-CA")}T12:00:00`).getTime()
-            const pr = { org: p.org, project: p.project, repo: p.repoName, id: Number(p.prId) }
-            const past = await sessionsFor(pr).catch(() => [])
-            const ok = await postSession({ id: newId(), org: p.org, project: p.project, repo: p.repoName, pr: pr.id, title: f ? f.title : "",
-              start: startMs, end: startMs + m * 60000, seconds: m * 60, outcome: "", pass: past.length + 1, note: "", manual: true })
+            const ok = await logReview({ id: newId(), org: p.org, project: p.project, repo: p.repoName, pr: Number(p.prId), title: f ? f.title : "",
+              start: startMs, end: startMs + m * 60000, seconds: m * 60, outcome: "", pass: 1, note: "", manual: true }, false)
             addErr.textContent = ok ? "" : "Saved in this browser; it goes to the local service once that answers."
             loadHistory(p, history)
           })), addErr)
@@ -3540,6 +3564,7 @@
         btn("Turn the clock off", () => setEnabled(false), "ado-rc-link"))
     }
     function passLine(s) {
+      if (s.sameDay) return el("p", null, `Adds to today's ${mins(s.sameDay)} on this PR.`)
       if (s.pass <= 1) return null
       const f = s.firstPass
       return el("p", null, `Pass ${s.pass} on this PR.${f ? ` The 1st was ${mins(f.seconds)} on ${new Date(f.start).toLocaleDateString([], { month: "short", day: "numeric" })}.` : ""}`)
@@ -3596,7 +3621,7 @@
             const old = load()
             if (old) {
               const done = { ...old, spans: Spans.close(old.spans, Date.now()) }
-              await postSession(sessionOf(done, activeSecs(done), old.vote ? VOTES[old.vote] : "", ""))
+              await logReview(sessionOf(done, activeSecs(done), old.vote ? VOTES[old.vote] : "", ""), false)
               write(K.state, null)
             }
             await start(p)
@@ -3648,6 +3673,11 @@
       const minutes = el("input", { type: "number", min: "1", max: "600", value: String(Math.max(1, Math.round(secs / 60))), id: "ado-rc-log-min", style: "width: 70px" })
       const note = el("input", { type: "text", id: "ado-rc-log-note", maxlength: "500", placeholder: "Optional, e.g. ran it on alt ports" })
       const err = el("span", { class: "ado-rc-err", role: "alert" })
+      const newPass = el("input", { type: "checkbox", id: "ado-rc-new-pass" })
+      const passCell = s.sameDay
+        ? el("span", { class: "ado-rc-col", style: "gap: 4px" }, `Adds to today's ${mins(s.sameDay)}`,
+          el("label", { for: "ado-rc-new-pass", class: "ado-rc-row", style: "gap: 6px" }, newPass, "Count as a new pass"))
+        : el("span", null, s.pass > 1 ? `${s.pass} on this PR` : "1st on this PR")
       const end = s.spans[s.spans.length - 1][1] ?? Date.now()
       return [
         el("div", { class: "ado-rc-col", style: "gap: 2px" }, el("h3", null, `Log ${mins(secs)} on !${s.pr.id}?`),
@@ -3655,7 +3685,7 @@
         el("div", null, line(s.spans, end), ticks(at(s.spans[0][0]), at(end))),
         el("div", { class: "ado-rc-grid" },
           el("span", null, "Outcome"), el("span", null, q.outcome || "No vote"),
-          el("span", null, "Pass"), el("span", null, s.pass > 1 ? `${s.pass} on this PR` : "1st on this PR"),
+          el("span", null, "Pass"), passCell,
           el("label", { for: "ado-rc-log-min" }, "Minutes"), minutes,
           el("label", { for: "ado-rc-log-note" }, "Note"), note),
         el("div", { class: "ado-rc-row" },
@@ -3664,7 +3694,7 @@
             if (!(m >= 1 && m <= 600)) return (err.textContent = "Minutes between 1 and 600.")
             const x = load()
             const seconds = m === Math.max(1, Math.round(secs / 60)) ? secs : m * 60
-            const ok = await postSession(sessionOf(x, seconds, q.outcome, note.value.trim()))
+            const ok = await logReview(sessionOf(x, seconds, q.outcome, note.value.trim()), newPass.checked)
             write(K.state, null)
             closePop()
             render()
