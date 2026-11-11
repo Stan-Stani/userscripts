@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-11.1
+// @version      2026-11-11.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -2892,13 +2892,14 @@
       }
     }
 
-    function localRow(row, commits) {
+    // `pr` ("PR !12309 (CoreAPI)") leads every request, so the session knows which PR it's about.
+    function localRow(row, commits, pr) {
       const status = h("span", { class: `${LOCAL}-status`, role: "status" })
       const input = h("input", { type: "text", maxlength: "2000", placeholder: "Ask this session…", "aria-label": `Request for ${row.title}` })
       const send = async () => {
         const prompt = input.value.trim()
         if (!prompt) return input.focus()
-        if (await sendTo(row, prompt, status)) input.value = ""
+        if (await sendTo(row, `${pr}: ${prompt}`, status)) input.value = ""
       }
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.isComposing) {
@@ -2909,7 +2910,13 @@
       const composer = h("div", { class: `${LOCAL}-composer`, hidden: true },
         input,
         h("div", { class: `${LOCAL}-actions` },
-          h("button", { type: "button", class: `${LOCAL}-chip`, onclick: () => { input.value = UPDATE_FROM_MAIN; input.focus() } }, "Update from main"),
+          // One click sends it; disabled while it goes so a double click can't send twice.
+          h("button", { type: "button", class: `${LOCAL}-chip`, title: UPDATE_FROM_MAIN, onclick: async (e) => {
+            const chip = e.currentTarget
+            chip.disabled = true
+            await sendTo(row, `${pr}: ${UPDATE_FROM_MAIN}`, status)
+            chip.disabled = false
+          } }, "Update from main"),
           h("button", { type: "button", class: `${LOCAL}-send`, onclick: send }, "Send")))
       const toggle = h("button", { type: "button", class: `${LOCAL}-ask`, "aria-label": `Send a request to ${row.title}`, title: "Send a request to this session",
         "aria-expanded": "false", onclick: () => {
@@ -2927,11 +2934,11 @@
         composer)
     }
 
-    function renderLocal(body, rows, commitsBy) {
+    function renderLocal(body, rows, commitsBy, pr) {
       if (!rows.length) return body.replaceChildren(note("No sessions on this machine mention this PR."))
       const own = rows.filter((r) => r.related || commitsBy.has(r.id))
       const others = rows.filter((r) => !own.includes(r))
-      const list = (items) => h("ul", { class: `${SECTION_CLASS}-list` }, items.map((r) => localRow(r, commitsBy.get(r.id) || 0)))
+      const list = (items) => h("ul", { class: `${SECTION_CLASS}-list` }, items.map((r) => localRow(r, commitsBy.get(r.id) || 0, pr)))
       const more = others.length && list(others)
       if (more) more.hidden = true
       const reveal = others.length && h("button", { type: "button", class: `${LOCAL}-more`, "aria-expanded": "false", onclick: (e) => {
@@ -2955,7 +2962,7 @@
             .then((rows) => ({ rows, commitsBy: new Map(sessions.filter((s) => s.localId).map((s) => [s.localId, s.commits.length])) }))))
       }
       localLoads.get(key).then(
-        ({ rows, commitsBy }) => renderLocal(body, rows, commitsBy),
+        ({ rows, commitsBy }) => renderLocal(body, rows, commitsBy, `PR !${info.prId} (${decodeURIComponent(info.repo)})`),
         () => {
           // No local service (or no GM_xmlhttpRequest): no section, and no retry
           // on every DOM change.

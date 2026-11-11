@@ -292,9 +292,9 @@ collapsed list of others that only mention it. Each row shows whether the
 session is working, idle, open in a terminal or stopped.
 
 - Click a session to open it in your `claude agents` view.
-- `>_` opens a box to send it a request, with an **Update from main** shortcut.
-  Enter sends it; the session opens in your agents view with the request typed
-  and sent.
+- `>_` opens a box to send it a request: type one and press Enter, or click
+  **Update from main**, which sends that request straight away. The session
+  opens in your agents view with the request typed and sent.
 
 The service answers `GET /pr-sessions?pr=<id>&branch=<name>` from
 `cc-pr --list`, and `POST /pr-sessions/send` `{ "id", "prompt" }` (JSON with
