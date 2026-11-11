@@ -86,6 +86,37 @@
     return { org, project: segments[segments.length - 1] }
   }
 
+  // The optional local service on 127.0.0.1:47811 (Stan's ado-pr-redirector; see
+  // README). ADO's CSP keeps the page from calling localhost, so this goes
+  // through GM_xmlhttpRequest. A POST carries JSON and X-ADO-Toolbox: 1, which a
+  // web page can't send there without a CORS preflight the service never answers.
+  // Rejects when the service or GM_xmlhttpRequest is missing.
+  function localService(method, path, body, timeout = 4000) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== "function") return reject(new Error("GM_xmlhttpRequest unavailable"))
+      GM_xmlhttpRequest({
+        method,
+        url: `http://127.0.0.1:47811${path}`,
+        timeout,
+        headers: body ? { "Content-Type": "application/json", "X-ADO-Toolbox": "1" } : {},
+        data: body ? JSON.stringify(body) : undefined,
+        onload: (r) => {
+          let json = null
+          try {
+            json = JSON.parse(r.responseText)
+          } catch {
+            /* not JSON */
+          }
+          if (r.status !== 200) return reject(new Error((json && json.error) || `${r.status} from ${path}`))
+          if (json === null) return reject(new Error(`no JSON from ${path}`))
+          resolve(json)
+        },
+        onerror: () => reject(new Error("local service unreachable")),
+        ontimeout: () => reject(new Error("local service timed out")),
+      })
+    })
+  }
+
   async function fetchJson(url, body, method) {
     const response = await fetch(url, {
       method: method || (body ? "POST" : "GET"),
@@ -2963,7 +2994,6 @@
   // logged time waits in this browser until the service answers.
   // ============================================================
   function createReviewClock() {
-    const HUB = "http://127.0.0.1:47811"
     const K = {
       on: "ado-rc-enabled",
       state: "ado-rc-state",
@@ -3011,28 +3041,7 @@
       }
     }
 
-    function hub(method, path, body) {
-      return new Promise((resolve, reject) => {
-        if (typeof GM_xmlhttpRequest !== "function") return reject(new Error("GM_xmlhttpRequest unavailable"))
-        GM_xmlhttpRequest({
-          method,
-          url: HUB + path,
-          timeout: 4000,
-          headers: body ? { "Content-Type": "application/json", "X-ADO-Toolbox": "1" } : {},
-          data: body ? JSON.stringify(body) : undefined,
-          onload: (r) => {
-            if (r.status !== 200) return reject(new Error(`${r.status} from ${path}`))
-            try {
-              resolve(JSON.parse(r.responseText))
-            } catch (e) {
-              reject(e)
-            }
-          },
-          onerror: () => reject(new Error("local service unreachable")),
-          ontimeout: () => reject(new Error("local service timed out")),
-        })
-      })
-    }
+    const hub = (method, path, body) => localService(method, path, body)
     async function idleSeconds() {
       try {
         const { idle } = await hub("GET", "/idle")
