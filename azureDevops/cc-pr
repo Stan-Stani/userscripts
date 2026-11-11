@@ -33,6 +33,7 @@
 #                   are skipped; default: Claude Bridge's own sessions, "Teams: …",
 #                   and sessions about it, "claude bridge …". Empty skips nothing.
 #   CC_PR_START_DIR  where --start runs the new session (default: ~)
+#   CC_PR_LIVE=0     --list leaves the live column empty (skips a `claude agents` call per match)
 #   AZDO_PAT        Azure DevOps token for --thread-context (default: an `az` login)
 #
 # --thread-context prints "<file>\t<first comment, shortened>\t<PR title>\t<branch>";
@@ -198,7 +199,10 @@ else
       title=$(title_of "$f")
       if [ -n "$exclude" ] && printf '%s' "$title" | grep -Eiq -- "$exclude"; then continue; fi
       use_config "$(config_of "$f")"
-      live=$(live_state "$(basename "$f" .jsonl)")
+      # CC_PR_LIVE=0 skips a `claude agents` call per match, for a caller that
+      # reads the live sessions once itself.
+      live=""
+      [ "${CC_PR_LIVE-1}" = 0 ] || live=$(live_state "$(basename "$f" .jsonl)")
       printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$title" "$(cwd_of "$f")" "$(stat -f %m "$f")" "${live%% *}"
     done | sort -t$'\t' -k4,4rn
   ) || true
