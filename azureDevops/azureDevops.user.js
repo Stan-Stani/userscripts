@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-10.2
+// @version      2026-11-11.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -2625,6 +2625,7 @@
   // ============================================================
   function createPrClaudeSessions() {
     const SECTION_CLASS = "ado-claude-sessions"
+    const LOCAL = "ado-local-sessions"
     const CACHE_KEY = "ado-claude-session-commits"
     // Commit id → linked sessions, ~60 bytes each; the oldest go first.
     const CACHE_MAX = 5000
@@ -2678,6 +2679,64 @@
         font-size: 12px;
         color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
       }
+      .${LOCAL} { margin-bottom: 24px; }
+      .${LOCAL}-row { display: flex; align-items: center; gap: 4px; }
+      .${LOCAL}-open {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: left;
+        border: 0;
+        background: none;
+        padding: 0;
+        font: inherit;
+        color: var(--communication-foreground, #0078d4);
+        cursor: pointer;
+      }
+      .${LOCAL}-open:hover { text-decoration: underline; }
+      .${LOCAL}-ask, .${LOCAL}-more {
+        border: 0;
+        background: none;
+        border-radius: 3px;
+        cursor: pointer;
+        color: var(--text-secondary-color, rgba(0, 0, 0, 0.55));
+        font: inherit;
+        font-size: 12px;
+      }
+      .${LOCAL}-ask { display: inline-flex; padding: 4px; flex-shrink: 0; }
+      .${LOCAL}-more { padding: 2px 0; margin-top: 8px; }
+      .${LOCAL}-ask:hover, .${LOCAL}-ask[aria-expanded="true"], .${LOCAL}-more:hover {
+        background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06));
+        color: var(--text-primary-color, rgba(0, 0, 0, 0.9));
+      }
+      .${LOCAL}-status { color: var(--text-primary-color, rgba(0, 0, 0, 0.9)); }
+      .${LOCAL}-composer { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+      .${LOCAL}-composer[hidden] { display: none; }
+      .${LOCAL}-composer input {
+        font: inherit;
+        font-size: 13px;
+        padding: 5px 8px;
+        border: 1px solid var(--palette-black-alpha-20, rgba(0, 0, 0, 0.2));
+        border-radius: 3px;
+        background: var(--background-color, #fff);
+        color: inherit;
+        min-width: 0;
+      }
+      .${LOCAL}-actions { display: flex; gap: 6px; align-items: center; }
+      .${LOCAL}-chip, .${LOCAL}-send {
+        font: inherit;
+        font-size: 12px;
+        padding: 3px 10px;
+        border-radius: 3px;
+        cursor: pointer;
+        border: 1px solid var(--palette-black-alpha-20, rgba(0, 0, 0, 0.2));
+        background: transparent;
+        color: inherit;
+      }
+      .${LOCAL}-send { margin-left: auto; border-color: #0078d4; background: #0078d4; color: #fff; font-weight: 600; }
+      .${LOCAL}-chip:hover { background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06)); }
     `
 
     const launcher = createLauncher({
@@ -2789,8 +2848,122 @@
       })
       sessions.sort((a, b) => Date.parse(b.when) - Date.parse(a.when))
       const names = await localSessionNames(sessions.map((s) => s.url.split("/").pop()))
-      for (const s of sessions) s.name = names[s.url.split("/").pop()]?.name
+      for (const s of sessions) {
+        const local = names[s.url.split("/").pop()]
+        s.name = local?.name
+        s.localId = local?.sessionId
+      }
       return { sessions, branch: pr.sourceRefName.replace(/^refs\/heads\//, "") }
+    }
+
+    // --- Local sessions: this machine's Claude Code sessions on the PR, from the
+    // local service's GET /pr-sessions (cc-pr --list), above the claude.ai links.
+    // Each opens in your agents view, or takes a request typed here, through
+    // POST /pr-sessions/send and Hammerspoon (see README). No service: no section.
+    const UPDATE_FROM_MAIN = "Update this PR's branch from main and push it."
+    const localLoads = new Map() // PR key → Promise of rows
+    const noLocal = new Set() // PR keys the local service didn't answer for (until reload)
+
+    function h(tag, attrs, ...kids) {
+      const node = document.createElement(tag)
+      for (const [k, v] of Object.entries(attrs || {})) {
+        if (v == null || v === false) continue
+        if (k === "class") node.className = v
+        else if (k.startsWith("on")) node.addEventListener(k.slice(2), v)
+        else node.setAttribute(k, v === true ? "" : String(v))
+      }
+      for (const kid of kids.flat()) if (kid != null && kid !== false) node.append(kid.nodeType ? kid : document.createTextNode(String(kid)))
+      return node
+    }
+
+    const STATE = (live) =>
+      live === "background busy" ? "working" : live === "background idle" ? "idle"
+        : live.startsWith("background") ? "running" : live === "interactive" ? "open in a terminal" : "stopped"
+
+    async function sendTo(row, prompt, status) {
+      status.textContent = prompt ? "Sending…" : "Opening…"
+      try {
+        await localService("POST", "/pr-sessions/send", { id: row.id, prompt }, 15000)
+        status.textContent = prompt ? "Sent. It opens in your agents view." : "Opening in your agents view."
+        return true
+      } catch (e) {
+        status.textContent = `Couldn't: ${e.message}`
+        return false
+      }
+    }
+
+    function localRow(row, commits) {
+      const status = h("span", { class: `${LOCAL}-status`, role: "status" })
+      const input = h("input", { type: "text", maxlength: "2000", placeholder: "Ask this session…", "aria-label": `Request for ${row.title}` })
+      const send = async () => {
+        const prompt = input.value.trim()
+        if (!prompt) return input.focus()
+        if (await sendTo(row, prompt, status)) input.value = ""
+      }
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) {
+          e.preventDefault()
+          send()
+        }
+      })
+      const composer = h("div", { class: `${LOCAL}-composer`, hidden: true },
+        input,
+        h("div", { class: `${LOCAL}-actions` },
+          h("button", { type: "button", class: `${LOCAL}-chip`, onclick: () => { input.value = UPDATE_FROM_MAIN; input.focus() } }, "Update from main"),
+          h("button", { type: "button", class: `${LOCAL}-send`, onclick: send }, "Send")))
+      const toggle = h("button", { type: "button", class: `${LOCAL}-ask`, "aria-label": `Send a request to ${row.title}`, title: "Send a request to this session",
+        "aria-expanded": "false", onclick: () => {
+          composer.hidden = !composer.hidden
+          toggle.setAttribute("aria-expanded", String(!composer.hidden))
+          if (!composer.hidden) input.focus()
+        } })
+      toggle.innerHTML = TERMINAL_ICON
+      const meta = [STATE(row.live), commits && `made ${commits} commit${commits === 1 ? "" : "s"}`, row.folder, row.mtime && timeAgo(new Date(row.mtime).toISOString())]
+      return h("li", null,
+        h("div", { class: `${LOCAL}-row` },
+          h("button", { type: "button", class: `${LOCAL}-open`, title: `${row.title}\nOpen in your agents view`, onclick: () => sendTo(row, "", status) }, row.title || "Untitled session"),
+          toggle),
+        h("div", { class: `${SECTION_CLASS}-meta` }, meta.filter(Boolean).join(" · "), " ", status),
+        composer)
+    }
+
+    function renderLocal(body, rows, commitsBy) {
+      if (!rows.length) return body.replaceChildren(note("No sessions on this machine mention this PR."))
+      const own = rows.filter((r) => r.related || commitsBy.has(r.id))
+      const others = rows.filter((r) => !own.includes(r))
+      const list = (items) => h("ul", { class: `${SECTION_CLASS}-list` }, items.map((r) => localRow(r, commitsBy.get(r.id) || 0)))
+      const more = others.length && list(others)
+      if (more) more.hidden = true
+      const reveal = others.length && h("button", { type: "button", class: `${LOCAL}-more`, "aria-expanded": "false", onclick: (e) => {
+        more.hidden = !more.hidden
+        e.currentTarget.setAttribute("aria-expanded", String(!more.hidden))
+        e.currentTarget.textContent = more.hidden ? `${others.length} more mention it` : "Show fewer"
+      } }, `${others.length} more mention it`)
+      body.replaceChildren(...[own.length ? list(own) : note("None named after this PR or behind its commits."), reveal, more].filter(Boolean))
+    }
+
+    function addLocalSection(pane, info, key, before) {
+      const section = h("div", { class: `${LOCAL} flex-column rhythm-vertical-8`, "data-pr": key },
+        h("div", { class: `${SECTION_CLASS}-head` },
+          h("div", { "aria-level": "2", class: "bolt-header-title body-xl m", role: "heading" }, "Local sessions")),
+        h("div", { class: `${LOCAL}-body` }, note("Looking on this machine…")))
+      pane.insertBefore(section, before)
+      const body = section.querySelector(`.${LOCAL}-body`)
+      if (!localLoads.has(key)) {
+        localLoads.set(key, loads.get(key).catch(() => ({ sessions: [], branch: "" })).then(({ sessions, branch }) =>
+          localService("GET", `/pr-sessions?pr=${info.prId}${branch ? `&branch=${encodeURIComponent(branch)}` : ""}`, null, 40000)
+            .then((rows) => ({ rows, commitsBy: new Map(sessions.filter((s) => s.localId).map((s) => [s.localId, s.commits.length])) }))))
+      }
+      localLoads.get(key).then(
+        ({ rows, commitsBy }) => renderLocal(body, rows, commitsBy),
+        () => {
+          // No local service (or no GM_xmlhttpRequest): no section, and no retry
+          // on every DOM change.
+          localLoads.delete(key)
+          noLocal.add(key)
+          section.remove()
+        }
+      )
     }
 
     function note(text) {
@@ -2832,8 +3005,13 @@
       if (!info) return
       const key = `${info.prefix}/${info.repo}/${info.prId}`
       const existing = pane.querySelector(`.${SECTION_CLASS}`)
-      if (existing && existing.dataset.pr === key) return
+      if (existing && existing.dataset.pr === key) {
+        const local = pane.querySelector(`.${LOCAL}`)
+        if (!local && typeof GM_xmlhttpRequest === "function" && !noLocal.has(key)) addLocalSection(pane, info, key, existing)
+        return
+      }
       existing?.remove()
+      pane.querySelector(`.${LOCAL}`)?.remove()
 
       const section = document.createElement("div")
       section.className = `${SECTION_CLASS} flex-column rhythm-vertical-8`
@@ -2857,6 +3035,7 @@
       pane.append(section)
 
       if (!loads.has(key)) loads.set(key, loadSessions(info))
+      if (typeof GM_xmlhttpRequest === "function" && !noLocal.has(key)) addLocalSection(pane, info, key, section)
       loads.get(key).then(
         ({ sessions, branch }) => {
           btn.dataset.branch = branch
