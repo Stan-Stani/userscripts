@@ -283,13 +283,13 @@ end)
 
 ---
 
-### Local sessions
+### With the local service: your local sessions
 
-With the local service running, a **Local sessions** section above the claude.ai
-links lists this machine's Claude Code sessions on the PR: the ones named after
-it, filed in a folder named after it, or behind its commits first, then a
-collapsed list of others that only mention it. Each row shows whether the
-session is working, idle, open in a terminal or stopped.
+With the local service running, the **Claude sessions** section lists this
+machine's Claude Code sessions on the PR instead of the claude.ai links: the
+ones named after it, filed in a folder named after it, or behind its commits
+first, then a collapsed list of others that only mention it. Each row shows
+whether the session is working, idle, open in a terminal or stopped.
 
 - Click a session to open it in your `claude agents` view.
 - `>_` opens a box to send it a request: type one and press Enter, or click
@@ -299,8 +299,9 @@ session is working, idle, open in a terminal or stopped.
 The service answers `GET /pr-sessions?pr=<id>&branch=<name>` from
 `cc-pr --list`, and `POST /pr-sessions/send` `{ "id", "prompt" }` (JSON with
 `X-ADO-Toolbox: 1`) hands the session and request to Hammerspoon
-(`ccpr.request`), which opens it as *Send to Claude Code* does. Without the
-service the section doesn't show.
+(`ccpr.request`), which opens it as *Send to Claude Code* does, with the PR
+(`PR !12309 (CoreAPI): …`) at the start of every request. Without the service
+the section shows the claude.ai links and **Resume locally** above.
 
 ---
 

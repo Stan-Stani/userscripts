@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-11.2
+// @version      2026-11-11.3
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -2884,7 +2884,10 @@
       status.textContent = prompt ? "Sending…" : "Opening…"
       try {
         await localService("POST", "/pr-sessions/send", { id: row.id, prompt }, 15000)
-        status.textContent = prompt ? "Sent. It opens in your agents view." : "Opening in your agents view."
+        const done = prompt ? "Sent. It opens in your agents view." : "Opening in your agents view."
+        status.textContent = done
+        // A success note goes after a few seconds; an error stays until the next try.
+        setTimeout(() => status.textContent === done && (status.textContent = ""), 4000)
         return true
       } catch (e) {
         status.textContent = `Couldn't: ${e.message}`
@@ -2952,7 +2955,7 @@
     function addLocalSection(pane, info, key, before) {
       const section = h("div", { class: `${LOCAL} flex-column rhythm-vertical-8`, "data-pr": key },
         h("div", { class: `${SECTION_CLASS}-head` },
-          h("div", { "aria-level": "2", class: "bolt-header-title body-xl m", role: "heading" }, "Local sessions")),
+          h("div", { "aria-level": "2", class: "bolt-header-title body-xl m", role: "heading" }, "Claude sessions")),
         h("div", { class: `${LOCAL}-body` }, note("Looking on this machine…")))
       pane.insertBefore(section, before)
       const body = section.querySelector(`.${LOCAL}-body`)
@@ -2964,11 +2967,12 @@
       localLoads.get(key).then(
         ({ rows, commitsBy }) => renderLocal(body, rows, commitsBy, `PR !${info.prId} (${decodeURIComponent(info.repo)})`),
         () => {
-          // No local service (or no GM_xmlhttpRequest): no section, and no retry
-          // on every DOM change.
+          // No local service (or no GM_xmlhttpRequest): the claude.ai links take
+          // its place, and no retry on every DOM change.
           localLoads.delete(key)
           noLocal.add(key)
           section.remove()
+          before.style.display = ""
         }
       )
     }
@@ -3042,7 +3046,13 @@
       pane.append(section)
 
       if (!loads.has(key)) loads.set(key, loadSessions(info))
-      if (typeof GM_xmlhttpRequest === "function" && !noLocal.has(key)) addLocalSection(pane, info, key, section)
+      // With the local service, its list is the side pane's "Claude sessions" and
+      // the claude.ai links stay hidden (still loaded: they rank the local rows).
+      // The hidden section also marks the pane as done for this PR.
+      if (typeof GM_xmlhttpRequest === "function" && !noLocal.has(key)) {
+        section.style.display = "none"
+        addLocalSection(pane, info, key, section)
+      }
       loads.get(key).then(
         ({ sessions, branch }) => {
           btn.dataset.branch = branch
