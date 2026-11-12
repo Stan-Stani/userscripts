@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- install.sh fills in __NODE__ and __HOME__ and writes this to ~/Library/LaunchAgents. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ado-companion</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__HOME__/.local/bin/ado-companion.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.local/share/ado-companion/companion.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.local/share/ado-companion/companion.log</string>
+</dict>
+</plist>
