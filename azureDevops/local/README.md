@@ -14,7 +14,7 @@ local Claude sessions on a PR, the review clock's idle detection and log, and
 ## Install
 
 ```sh
-azureDevops/local/install.sh            # add --with-review-sync for the 18:00 sync
+azureDevops/local/install.sh            # add --with-review-sync for the review-time sync
 ```
 
 Then:

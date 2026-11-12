@@ -13,7 +13,7 @@
  * waits for its "<batch> written" reply, then stops and deletes it. Nothing changed:
  * no session is started.
  *
- *   pr-review-sync --run      what launchd runs nightly
+ *   pr-review-sync --run      what launchd runs (at login, then every 2 hours)
  *   pr-review-sync --pending  print the weeks that would be written, write nothing
  *
  * Settings, in ado-companion's ~/.config/ado-companion/config.json:
@@ -200,7 +200,7 @@ async function runSync() {
   // Stop first: rm refuses a running session. Never kill it; the daemon would resume it.
   await run(CLAUDE, ['stop', id], { env: CLAUDE_ENV, timeout: 30000 }).catch(() => {})
   await run(CLAUDE, ['rm', id], { env: CLAUDE_ENV, timeout: 30000 }).catch((e) => log(`couldn't remove session ${id}: ${e.message}`))
-  // rm leaves the transcript; a nightly job shouldn't pile them up. Kept on failure.
+  // rm leaves the transcript; a job that runs all day shouldn't pile them up. Kept on failure.
   if (transcript && result === 'ok') rmSync(transcript, { force: true })
 
   if (result !== 'ok') return log(`${batch}: ${result}`)

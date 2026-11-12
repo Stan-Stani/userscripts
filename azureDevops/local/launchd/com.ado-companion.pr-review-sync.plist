@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- install.sh --with-review-sync fills in __NODE__ and __HOME__ and writes this to
-     ~/Library/LaunchAgents. Runs at 18:00, or at the next wake after a missed run. -->
+     ~/Library/LaunchAgents. Runs at login and every 2 hours: a fixed evening time
+     never comes on a Mac that's shut down by then (launchd catches up runs missed
+     asleep, not off). A run with nothing new starts no Claude session. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.ado-companion.pr-review-sync</string>
@@ -15,11 +17,8 @@
   <dict>
     <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key><integer>18</integer>
-    <key>Minute</key><integer>0</integer>
-  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>7200</integer>
   <key>StandardOutPath</key><string>__HOME__/.local/share/pr-review/launchd.log</string>
   <key>StandardErrorPath</key><string>__HOME__/.local/share/pr-review/launchd.log</string>
 </dict>
