@@ -6,7 +6,8 @@
 # Links ado-companion, pr-review-sync and cc-pr into ~/.local/bin, and ccpr.lua into
 # ~/.hammerspoon when Hammerspoon is installed (an existing ccpr.lua is kept as
 # ccpr.lua.bak-<date>). Writes the launchd agent that keeps ado-companion running,
-# plus the 18:00 review-time sync with --with-review-sync, and (re)starts them.
+# plus the review-time sync (at login, then every 2 hours) with --with-review-sync,
+# and (re)starts them.
 # Writes ~/.config/ado-companion/config.json with empty settings if it's missing.
 # Safe to rerun.
 set -euo pipefail
@@ -69,7 +70,18 @@ agent() {
   sed -e "s#__NODE__#$node#g" -e "s#__HOME__#$HOME#g" "$here/launchd/$label.plist" > "$plist"
   plutil -lint "$plist" >/dev/null
   launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-  launchctl bootstrap "gui/$uid" "$plist"
+  # Loading right after an unload can fail with "Input/output error" until
+  # launchd has let go of the old job, so wait for that and retry.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print "gui/$uid/$label" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  local tries=0
+  until launchctl bootstrap "gui/$uid" "$plist" 2>/dev/null; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 5 ] || { echo "install.sh: couldn't start $label (launchctl bootstrap gui/$uid $plist)" >&2; exit 1; }
+    sleep 1
+  done
   echo "install.sh: $label running from $plist"
 }
 
