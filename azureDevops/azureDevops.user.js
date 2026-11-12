@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-11.3
+// @version      2026-11-12.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -86,8 +86,8 @@
     return { org, project: segments[segments.length - 1] }
   }
 
-  // The optional local service on 127.0.0.1:47811 (Stan's ado-pr-redirector; see
-  // README). ADO's CSP keeps the page from calling localhost, so this goes
+  // The optional local service on 127.0.0.1:47811 (ado-companion, in
+  // azureDevops/local). ADO's CSP keeps the page from calling localhost, so this goes
   // through GM_xmlhttpRequest. A POST carries JSON and X-ADO-Toolbox: 1, which a
   // web page can't send there without a CORS preflight the service never answers.
   // Rejects when the service or GM_xmlhttpRequest is missing.
@@ -2785,8 +2785,8 @@
     }
 
     // The sessions' names on this machine, { "session_…": { name } }, from an
-    // optional local service that reads Claude Code's transcripts (Stan's
-    // ado-pr-redirector; see README). ADO's CSP keeps the page from calling
+    // optional local service that reads Claude Code's transcripts
+    // (ado-companion; see azureDevops/local). ADO's CSP keeps the page from calling
     // localhost, so this goes through GM_xmlhttpRequest. With no service, or no
     // GM_xmlhttpRequest, it's {} and rows keep their commit labels.
     function localSessionNames(ids) {
@@ -3184,8 +3184,8 @@
   //     you, it asks "still reviewing?" and stays paused until you answer;
   //   - voting (or Stop and log) offers to log the time, your vote the outcome.
   // Its state is shared by every ADO tab, so one clock runs at a time.
-  // Logged reviews go to a local service (Stan's ado-pr-redirector, see
-  // README): GET /idle gives the Mac's idle time, GET/POST /review-sessions
+  // Logged reviews go to a local service (ado-companion, in
+  // azureDevops/local): GET /idle gives the Mac's idle time, GET/POST /review-sessions
   // keeps the log. Without it the clock runs but can't tell you're away, and
   // logged time waits in this browser until the service answers.
   // ============================================================

@@ -21,6 +21,9 @@ others.
 
 Works on `dev.azure.com` and legacy `*.visualstudio.com` hosts.
 
+Features 10–12 do more with an optional local service on your Mac,
+[`ado-companion`](local/) (macOS; set up with `local/install.sh`).
+
 ---
 
 ## 1. PR File Path Tools
@@ -357,6 +360,6 @@ Sessions*, reached through `GM_xmlhttpRequest`):
   (which a web page can't send without a CORS preflight the service never answers)
 
 Without it the clock still runs but can't tell when you're away, and logged
-reviews wait in the browser until the service answers. Stan's
-`ado-pr-redirector` implements these and keeps the log on disk; a nightly job
-copies it into his Judgment Log.
+reviews wait in the browser until the service answers.
+[`ado-companion`](local/) implements these and keeps the log on disk;
+`pr-review-sync` there can copy it into a Judgment Log each evening.
