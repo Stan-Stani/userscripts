@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-16.6
+// @version      2026-11-16.7
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -3322,6 +3322,7 @@
     const VOTE_ACTION = /^(approve|approve with suggestions|wait for author|reject)$/i
     const CHIP = "ado-rc-chip"
     const POP = "ado-rc-pop"
+    const LIST = "ado-rc-listtime"
 
     // --- storage: GM storage, shared live by every ADO tab ---
     const HAS_GM = typeof GM_getValue === "function" && typeof GM_setValue === "function"
@@ -3684,6 +3685,8 @@
       .${CHIP} b { font-weight: 600; font-variant-numeric: tabular-nums; }
       .${CHIP} .ado-rc-dim { color: #605e5c; }
       .${CHIP}.ado-rc-armed { border-color: #0078d4; background: #eff6fc; color: #004578; font-weight: 600; }
+      .${LIST} { flex-shrink: 0; margin-left: 10px; font-size: 12px; color: #605e5c; white-space: nowrap; align-self: center; }
+      .${LIST}-running { color: #005a9e; font-weight: 600; }
       .${CHIP} .ado-rc-bang { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
         border-radius: 50%; background: #c27c00; color: #fff; font-size: 11px; font-weight: 700; }
       .${CHIP}.ado-rc-over { border-color: #e0b252; background: #fff4ce; color: #5c3b00; }
@@ -4075,12 +4078,59 @@
       ]
     }
 
+    // --- My pull requests: your logged time on each PR, and the running clock ---
+    let listTotals = null // "repo|id" → seconds, from GET /review-sessions
+    let listAt = 0
+    let listLoading = false
+    function decorateList() {
+      if (!/\/_pulls$/.test(location.pathname)) return
+      if (!listLoading && Date.now() - listAt > 60000) {
+        listLoading = true
+        hub("GET", "/review-sessions")
+          .then((all) => {
+            const totals = new Map()
+            for (const x of all) totals.set(`${x.repo}|${x.pr}`, (totals.get(`${x.repo}|${x.pr}`) || 0) + (x.seconds || 0))
+            listTotals = totals
+          }, () => {})
+          .finally(() => {
+            listAt = Date.now()
+            listLoading = false
+            decorateList()
+          })
+      }
+      const s = load()
+      document.querySelectorAll('a[role="row"]').forEach((row) => {
+        const m = /\/_git\/([^/]+)\/pullrequest\/(\d+)/.exec(row.getAttribute("href") || "")
+        const line = m && row.querySelectorAll(".bolt-table-two-line-cell-item")[1]
+        if (!line) return
+        const repo = decodeURIComponent(m[1])
+        const id = Number(m[2])
+        const running = !!s && s.pr.repo === repo && s.pr.id === id
+        const total = listTotals && listTotals.get(`${repo}|${id}`)
+        const text = running ? `${Spans.running(s.spans) ? "Reviewing" : "Paused"} ${clock(boxedSecs(s))} today` : total ? `${mins(total)} reviewed` : ""
+        let tag = line.querySelector(`.${LIST}`)
+        if (!text) return tag?.remove()
+        if (!tag) {
+          tag = el("span", { class: LIST })
+          line.append(tag)
+        }
+        const cls = running ? `${LIST} ${LIST}-running` : LIST
+        if (tag.className !== cls) tag.className = cls
+        // Only real changes: rewriting the same text is a DOM mutation too.
+        if (tag.textContent !== text) tag.textContent = text
+        const title = running ? "The review clock is on this PR" : "Your logged review time on this PR"
+        if (tag.title !== title) tag.title = title
+      })
+    }
+
     // --- the chip ---
     function render() {
       if (!enabled) {
         document.querySelector(`.${CHIP}`)?.remove()
+        document.querySelectorAll(`.${LIST}`).forEach((t) => t.remove())
         return closePop()
       }
+      decorateList()
       const p = prHere()
       // Before the vote button; a draft has none (only Decline to review and
       // Publish), so before Publish/Complete there.

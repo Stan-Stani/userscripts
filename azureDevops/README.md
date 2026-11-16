@@ -349,9 +349,12 @@ On a PR you're a reviewer of (not its author) a chip before the vote button
   A PR's logs on one day add up to one pass, unless you tick **Count as a new
   pass**.
 
+On **My pull requests**, each PR you've logged time on shows it ("57m reviewed"),
+and the one the clock is on shows its time today.
+
 The clock is shared by every ADO tab, so one runs at a time; opening another PR
-you review offers to move it there. The chip's popover lists your logged time on
-the PR, with Edit, Delete and **Add time** for a review you forgot to time.
+you review offers to move it there. The chip shows your total on the PR, and its popover lists the logged
+time, with Edit, Delete and **Add time** for a review you forgot to time.
 
 It needs a local service on `127.0.0.1:47811` (the same one as *PR Claude
 Sessions*, reached through `GM_xmlhttpRequest`):
