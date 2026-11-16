@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-16.1
+// @version      2026-11-16.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -3756,7 +3756,9 @@
         return [el("span", { class: "ado-rc-when" }, new Date(x.start).toLocaleDateString([], { month: "short", day: "numeric" })),
           el("b", null, mins(x.seconds)), el("span", null, x.outcome || (x.manual ? "Added by hand" : "")), el("span", null, edit, del)]
       })
-      box.replaceChildren(el("strong", null, `Your time on !${p.prId}`), el("div", { class: "ado-rc-hist" }, rows))
+      const total = list.reduce((t, x) => t + (x.seconds || 0), 0)
+      const heading = `Your time on !${p.prId}: ${mins(total)}${list.length > 1 ? ` in ${list.length} passes` : ""}`
+      box.replaceChildren(el("strong", null, heading), el("div", { class: "ado-rc-hist" }, rows))
     }
     function footer() {
       const box = el("input", { type: "number", min: "5", max: "240", value: String(boxSecs() / 60), id: "ado-rc-box", style: "width: 56px",
