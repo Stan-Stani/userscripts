@@ -440,21 +440,31 @@ function M.open(file, title, onlyWin, prompt)
     end)
 end
 
--- A request from the ADO Toolbox's "Local sessions" (PR side pane), handed over
--- by the local service (ado-companion) as a JSON file it wrote:
--- {file, title, prompt}. Read once and deleted; an empty prompt only opens the
--- session. Returns "ok" to the service's `hs -c`.
+-- A request from the ADO Toolbox's Claude sessions list (PR side pane), handed
+-- over by the local service (ado-companion) as a JSON file it wrote: {file, title,
+-- prompt} for an existing session (an empty prompt only opens it), or
+-- {kind = "start", name, prompt} for a new one. Read once and deleted. Returns
+-- "ok" to the service's `hs -c`.
 function M.request(path)
     if type(path) ~= "string" or not path:match("^" .. HOME .. "/%.cache/cc%-pr/requests/%x+%.json$") then
         return "bad request path"
     end
     local req = hs.json.read(path)
     os.remove(path)
-    if type(req) ~= "table" or type(req.file) ~= "string" then return "bad request" end
-    local prompt = type(req.prompt) == "string" and req.prompt ~= "" and req.prompt or nil
-    local title = type(req.title) == "string" and req.title or nil
+    if type(req) ~= "table" then return "bad request" end
     -- `win` (an iTerm window id) is for tests; the service never writes it.
     local win = req.win and tostring(req.win):match("^%d+$") or nil
+    -- {kind = "start", name, prompt}: a new session on the PR (side pane's "New session").
+    if req.kind == "start" then
+        if type(req.name) ~= "string" or req.name == "" or type(req.prompt) ~= "string" or req.prompt == "" then
+            return "bad request"
+        end
+        M.pending = hs.timer.doAfter(0.05, function() M.start(req.name, req.prompt, win) end)
+        return "ok"
+    end
+    if type(req.file) ~= "string" then return "bad request" end
+    local prompt = type(req.prompt) == "string" and req.prompt ~= "" and req.prompt or nil
+    local title = type(req.title) == "string" and req.title or nil
     -- Off the IPC call: opening drives iTerm for several seconds.
     M.pending = hs.timer.doAfter(0.05, function() M.open(req.file, title, win, prompt) end)
     return "ok"

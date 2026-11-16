@@ -42,6 +42,7 @@
  * And the Toolbox's "Local sessions" in a PR's side pane:
  *   GET  /pr-sessions?pr=<id>[&branch=<name>]  → the PR's local Claude Code sessions (cc-pr --list)
  *   POST /pr-sessions/send {"id": "<session uuid>", "prompt"?: "…"}
+ *   POST /pr-sessions/start {"pr", "repo", "branch"?, "title"?, "prompt"}  a new session on the PR
  * The POST (same JSON + header rule) hands the session, and the request typed on
  * the PR page, to Hammerspoon's ccpr.request, which opens it in an agents view
  * and types the request there.
@@ -469,7 +470,8 @@ const handlePrSessions = async (req, res, url) => {
     if (!PR_ID_RE.test(pr) || (branch && !BRANCH_RE.test(branch))) return sendJson(res, 400, { error: 'pr=<digits>[&branch=<name>]' })
     return sendJson(res, 200, await prSessions(pr, branch))
   }
-  if (url.pathname !== '/pr-sessions/send' || req.method !== 'POST') return sendJson(res, 404, { error: 'not found' })
+  const start = url.pathname === '/pr-sessions/start'
+  if ((url.pathname !== '/pr-sessions/send' && !start) || req.method !== 'POST') return sendJson(res, 404, { error: 'not found' })
   if (req.headers['x-ado-toolbox'] !== '1' || !String(req.headers['content-type']).startsWith('application/json')) {
     return sendJson(res, 403, { error: 'JSON with X-ADO-Toolbox: 1 only' })
   }
@@ -479,21 +481,51 @@ const handlePrSessions = async (req, res, url) => {
   } catch {
     return sendJson(res, 400, { error: 'bad JSON' })
   }
+  if (start) return startPrSession(res, body)
   if (!UUID_RE.test(body?.id)) return sendJson(res, 400, { error: 'bad id' })
   const file = transcriptOf(body.id)
   if (!file) return sendJson(res, 404, { error: 'no such session' })
-  // One line: a newline typed into Claude Code's prompt would send it early.
-  const prompt = typeof body.prompt === 'string' ? body.prompt.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 2000) : ''
+  const prompt = oneLine(body.prompt, 2000)
   const title = [...listCache.values()].flatMap((c) => c.rows).find((r) => r.id === body.id)?.title || 'The session'
-  // The request goes to Hammerspoon as a file, so none of it is ever Lua source.
-  mkdirSync(REQUESTS, { recursive: true, mode: 0o700 })
-  const request = join(REQUESTS, `${randomBytes(8).toString('hex')}.json`)
-  writeFileSync(request, JSON.stringify({ file, title, prompt }), { mode: 0o600 })
-  // No stdin (runTool): with an open one, `hs -c` waits for more after its answer.
-  const stdout = await runTool(HS, ['-c', `return require('ccpr').request('${request}')`], TOOL_ENV, 10000)
-  // `hs` can print "-- Loading extension: …" lines before the result.
-  const said = stdout.trim().split('\n').pop()
+  const said = await askHammerspoon({ file, title, prompt })
   return said === 'ok' ? sendJson(res, 200, { ok: true, title }) : sendJson(res, 502, { error: said || 'Hammerspoon said nothing' })
+}
+
+// One line: a newline typed into Claude Code's prompt would send it early.
+const oneLine = (v, max) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : '')
+
+// Hands a request to Hammerspoon's ccpr.request as a file, so none of it is ever
+// Lua source. Returns what ccpr.request answered ("ok" on success).
+const askHammerspoon = async (request) => {
+  mkdirSync(REQUESTS, { recursive: true, mode: 0o700 })
+  const file = join(REQUESTS, `${randomBytes(8).toString('hex')}.json`)
+  writeFileSync(file, JSON.stringify(request), { mode: 0o600 })
+  // No stdin (runTool): with an open one, `hs -c` waits for more after its answer.
+  const stdout = await runTool(HS, ['-c', `return require('ccpr').request('${file}')`], TOOL_ENV, 10000)
+  // `hs` can print "-- Loading extension: …" lines before the result.
+  return stdout.trim().split('\n').pop()
+}
+
+// POST /pr-sessions/start {pr, repo, branch?, title?, prompt}: a new background
+// session on the PR, named "pr <id> <title>", opened in the agents view with the
+// request (led by the PR, its branch and link) sent to it.
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/
+const startPrSession = async (res, body) => {
+  const pr = String(body?.pr ?? '')
+  const repo = String(body?.repo ?? '')
+  const branch = String(body?.branch ?? '')
+  const ask = oneLine(body?.prompt, 2000)
+  if (!PR_ID_RE.test(pr) || !REPO_RE.test(repo) || (branch && !BRANCH_RE.test(branch)) || !ask) {
+    return sendJson(res, 400, { error: 'pr, repo and prompt (and an optional branch) please' })
+  }
+  const title = oneLine(body?.title, 100)
+  const name = `pr ${pr} ${title}`.toLowerCase().trim().slice(0, 80)
+  const where = [repo, branch && `branch ${branch}`, ORG && PROJECT && webUrl(repo, pr)].filter(Boolean).join(', ')
+  const prompt = `PR !${pr} (${where}): ${ask}`
+  // The new session should show in the PR's list on the next look.
+  for (const key of listCache.keys()) if (key.startsWith(`${pr}|`)) listCache.delete(key)
+  const said = await askHammerspoon({ kind: 'start', name, prompt })
+  return said === 'ok' ? sendJson(res, 200, { ok: true, name }) : sendJson(res, 502, { error: said || 'Hammerspoon said nothing' })
 }
 
 createServer(async (req, res) => {
@@ -512,7 +544,7 @@ createServer(async (req, res) => {
       return sendJson(res, 500, { error: e.message })
     }
   }
-  if (url.pathname === '/pr-sessions' || url.pathname === '/pr-sessions/send') {
+  if (url.pathname === '/pr-sessions' || url.pathname === '/pr-sessions/send' || url.pathname === '/pr-sessions/start') {
     try {
       return await handlePrSessions(req, res, url)
     } catch (e) {

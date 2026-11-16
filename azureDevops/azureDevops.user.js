@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-16.5
+// @version      2026-11-16.6
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -2785,6 +2785,7 @@
       }
       .${LOCAL}-send { margin-left: auto; border-color: #0078d4; background: #0078d4; color: #fff; font-weight: 600; }
       .${LOCAL}-chip:hover { background: var(--palette-black-alpha-6, rgba(0, 0, 0, 0.06)); }
+      .${LOCAL}-new { margin-top: 10px; }
     `
 
     const launcher = createLauncher({
@@ -2901,7 +2902,7 @@
         s.name = local?.name
         s.localId = local?.sessionId
       }
-      return { sessions, branch: pr.sourceRefName.replace(/^refs\/heads\//, "") }
+      return { sessions, branch: pr.sourceRefName.replace(/^refs\/heads\//, ""), title: pr.title }
     }
 
     // --- Local sessions: this machine's Claude Code sessions on the PR, from the
@@ -2909,6 +2910,7 @@
     // Each opens in your agents view, or takes a request typed here, through
     // POST /pr-sessions/send and Hammerspoon (see README). No service: no section.
     const UPDATE_FROM_MAIN = "Update this PR's branch from main and push it."
+    const REVIEW_PR = "Review this PR."
     const localLoads = new Map() // PR key → Promise of rows
     const noLocal = new Set() // PR keys the local service didn't answer for (until reload)
 
@@ -2985,8 +2987,50 @@
         composer)
     }
 
-    function renderLocal(body, rows, commitsBy, pr) {
-      if (!rows.length) return body.replaceChildren(note("No sessions on this machine mention this PR."))
+    // "+ New session": a box to start a session on the PR (POST /pr-sessions/start),
+    // with a one-click "Review this PR". `ctx` is { prId, repo, branch, title }.
+    function newSession(ctx, refresh) {
+      const status = h("span", { class: `${LOCAL}-status`, role: "status" })
+      const input = h("input", { type: "text", maxlength: "2000", placeholder: "What should it do?", "aria-label": "Request for a new session on this PR" })
+      const start = async (ask, button) => {
+        if (!ask) return input.focus()
+        if (button) button.disabled = true
+        status.textContent = "Starting…"
+        try {
+          await localService("POST", "/pr-sessions/start",
+            { pr: Number(ctx.prId), repo: ctx.repo, branch: ctx.branch, title: ctx.title, prompt: ask }, 20000)
+          status.textContent = "Started. It opens in your agents view."
+          input.value = ""
+          // Listed once it has a transcript; a few seconds is plenty.
+          setTimeout(refresh, 12000)
+        } catch (e) {
+          status.textContent = `Couldn't: ${e.message}`
+        } finally {
+          if (button) button.disabled = false
+        }
+      }
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) {
+          e.preventDefault()
+          start(input.value.trim())
+        }
+      })
+      const composer = h("div", { class: `${LOCAL}-composer`, hidden: true },
+        input,
+        h("div", { class: `${LOCAL}-actions` },
+          h("button", { type: "button", class: `${LOCAL}-chip`, title: REVIEW_PR, onclick: (e) => start(REVIEW_PR, e.currentTarget) }, "Review this PR"),
+          h("button", { type: "button", class: `${LOCAL}-send`, onclick: (e) => start(input.value.trim(), e.currentTarget) }, "Start")))
+      const toggle = h("button", { type: "button", class: `${LOCAL}-more`, "aria-expanded": "false", onclick: () => {
+        composer.hidden = !composer.hidden
+        toggle.setAttribute("aria-expanded", String(!composer.hidden))
+        if (!composer.hidden) input.focus()
+      } }, "+ New session")
+      return h("div", { class: `${LOCAL}-new` }, h("div", null, toggle, " ", status), composer)
+    }
+
+    function renderLocal(body, rows, commitsBy, pr, ctx, refresh) {
+      const fresh = newSession(ctx, refresh)
+      if (!rows.length) return body.replaceChildren(note("No sessions on this machine mention this PR."), fresh)
       const own = rows.filter((r) => r.related || commitsBy.has(r.id))
       const others = rows.filter((r) => !own.includes(r))
       const list = (items) => h("ul", { class: `${SECTION_CLASS}-list` }, items.map((r) => localRow(r, commitsBy.get(r.id) || 0, pr)))
@@ -2997,7 +3041,7 @@
         e.currentTarget.setAttribute("aria-expanded", String(!more.hidden))
         e.currentTarget.textContent = more.hidden ? `${others.length} more mention it` : "Show fewer"
       } }, `${others.length} more mention it`)
-      body.replaceChildren(...[own.length ? list(own) : note("None named after this PR or behind its commits."), reveal, more].filter(Boolean))
+      body.replaceChildren(...[own.length ? list(own) : note("None named after this PR or behind its commits."), reveal, more, fresh].filter(Boolean))
     }
 
     function addLocalSection(pane, info, key, before) {
@@ -3007,13 +3051,21 @@
         h("div", { class: `${LOCAL}-body` }, note("Looking on this machine…")))
       pane.insertBefore(section, before)
       const body = section.querySelector(`.${LOCAL}-body`)
+      const repo = decodeURIComponent(info.repo)
       if (!localLoads.has(key)) {
-        localLoads.set(key, loads.get(key).catch(() => ({ sessions: [], branch: "" })).then(({ sessions, branch }) =>
+        localLoads.set(key, loads.get(key).catch(() => ({ sessions: [], branch: "", title: "" })).then(({ sessions, branch, title }) =>
           localService("GET", `/pr-sessions?pr=${info.prId}${branch ? `&branch=${encodeURIComponent(branch)}` : ""}`, null, 40000)
-            .then((rows) => ({ rows, commitsBy: new Map(sessions.filter((s) => s.localId).map((s) => [s.localId, s.commits.length])) }))))
+            .then((rows) => ({ rows, branch, title, commitsBy: new Map(sessions.filter((s) => s.localId).map((s) => [s.localId, s.commits.length])) }))))
+      }
+      // After a new session starts: list again, in place.
+      const refresh = () => {
+        localLoads.delete(key)
+        section.remove()
+        if (before.isConnected) addLocalSection(pane, info, key, before)
       }
       localLoads.get(key).then(
-        ({ rows, commitsBy }) => renderLocal(body, rows, commitsBy, `PR !${info.prId} (${decodeURIComponent(info.repo)})`),
+        ({ rows, commitsBy, branch, title }) =>
+          renderLocal(body, rows, commitsBy, `PR !${info.prId} (${repo})`, { prId: info.prId, repo, branch, title }, refresh),
         (e) => {
           // No local service (or no GM_xmlhttpRequest): the claude.ai links take
           // its place, and no retry on every DOM change. Where the companion

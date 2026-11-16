@@ -44,5 +44,6 @@ userscript can write.
 | `GET /claude-sessions?ids=session_…` | Local names of claude.ai sessions |
 | `GET /pr-sessions?pr=<id>&branch=<name>` | The PR's local Claude Code sessions |
 | `POST /pr-sessions/send` | Opens a session, typing a request into it |
+| `POST /pr-sessions/start` | Starts a new session on a PR with a request |
 | `GET /idle` | Seconds since the last keyboard or mouse input |
 | `GET`/`POST /review-sessions` | The review clock's log |
