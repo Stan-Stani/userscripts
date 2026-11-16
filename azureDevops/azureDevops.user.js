@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-12.1
+// @version      2026-11-16.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -3918,7 +3918,10 @@
         return closePop()
       }
       const p = prHere()
-      const anchor = p && document.querySelector(".repos-pr-header-vote-button")
+      // Before the vote button; a draft has none (only Decline to review and
+      // Publish), so before Publish/Complete there.
+      const anchor = p && (document.querySelector(".repos-pr-header-vote-button") ||
+        document.querySelector(".repos-pr-header-complete-button"))
       let chip = document.querySelector(`.${CHIP}`)
       if (!anchor) {
         chip?.remove()

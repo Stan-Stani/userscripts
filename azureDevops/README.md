@@ -331,7 +331,7 @@ Times how long you spend reviewing a PR. **Off by default**: turn it on from the
 Tampermonkey menu (**Review clock: turn on**). Off, it does nothing at all.
 
 On a PR you're a reviewer of (not its author) a chip before the vote button
-starts the clock on your first scroll, click or key in **Files**, or from its
+(on a draft, which has no vote button: before **Publish**) starts the clock on your first scroll, click or key in **Files**, or from its
 **Start now** button. Only active time counts:
 
 - **Away:** no keyboard or mouse anywhere on the Mac for 5 minutes pauses it.
