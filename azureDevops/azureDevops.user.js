@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-16.4
+// @version      2026-11-16.5
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -92,6 +92,7 @@
   // web page can't send there without a CORS preflight the service never answers.
   // Rejects when the service or GM_xmlhttpRequest is missing.
   function localService(method, path, body, timeout = 4000) {
+    const unreachable = (message) => Object.assign(new Error(message), { unreachable: true })
     return new Promise((resolve, reject) => {
       if (typeof GM_xmlhttpRequest !== "function") return reject(new Error("GM_xmlhttpRequest unavailable"))
       GM_xmlhttpRequest({
@@ -109,12 +110,59 @@
           }
           if (r.status !== 200) return reject(new Error((json && json.error) || `${r.status} from ${path}`))
           if (json === null) return reject(new Error(`no JSON from ${path}`))
+          markCompanionSeen()
           resolve(json)
         },
-        onerror: () => reject(new Error("local service unreachable")),
-        ontimeout: () => reject(new Error("local service timed out")),
+        onerror: () => reject(unreachable("local service unreachable")),
+        ontimeout: () => reject(unreachable("local service timed out")),
       })
     })
+  }
+
+  // Whether ado-companion has ever answered in this browser. Only then is its
+  // silence worth pointing out: teammates who never ran it see nothing.
+  const COMPANION_SEEN = "ado-companion-seen"
+  const COMPANION_RESTART = "launchctl kickstart -k gui/$(id -u)/com.ado-companion"
+  let companionSeenCache = null
+  function companionSeen() {
+    if (companionSeenCache === null) {
+      try {
+        companionSeenCache = typeof GM_getValue === "function" && GM_getValue(COMPANION_SEEN, false) === true
+      } catch {
+        companionSeenCache = false
+      }
+    }
+    return companionSeenCache
+  }
+  function markCompanionSeen() {
+    if (companionSeen() || typeof GM_setValue !== "function") return
+    companionSeenCache = true
+    try {
+      GM_setValue(COMPANION_SEEN, true)
+    } catch {}
+  }
+
+  // "ado-companion isn't answering, so <what that costs>. Restart it: <command> [Copy]"
+  function companionDownNote(cost) {
+    const wrap = document.createElement("div")
+    wrap.className = "ado-companion-down"
+    wrap.setAttribute("role", "status")
+    wrap.style.cssText = "font-size:12px;line-height:1.45;color:#5c3b00;background:#fff4ce;border-radius:4px;padding:6px 8px;"
+    const text = document.createElement("div")
+    text.textContent = `ado-companion isn't answering${cost ? `, so ${cost}` : ""}. Restart it:`
+    const row = document.createElement("div")
+    row.style.cssText = "display:flex;gap:6px;align-items:center;margin-top:4px;"
+    const code = document.createElement("code")
+    code.textContent = COMPANION_RESTART
+    code.style.cssText = "font-size:11px;user-select:all;overflow-wrap:anywhere;min-width:0;"
+    const copy = document.createElement("button")
+    copy.type = "button"
+    copy.textContent = "Copy"
+    copy.style.cssText = "font:inherit;font-size:11px;padding:1px 8px;border:1px solid #c8c6c4;border-radius:3px;background:#fff;color:#323130;cursor:pointer;flex-shrink:0;"
+    copy.addEventListener("click", () => navigator.clipboard?.writeText(COMPANION_RESTART).then(() => (copy.textContent = "Copied"), () => {}))
+    row.append(code, copy)
+    wrap.append(text, row)
+    return wrap
   }
 
   async function fetchJson(url, body, method) {
@@ -2966,13 +3014,26 @@
       }
       localLoads.get(key).then(
         ({ rows, commitsBy }) => renderLocal(body, rows, commitsBy, `PR !${info.prId} (${decodeURIComponent(info.repo)})`),
-        () => {
+        (e) => {
           // No local service (or no GM_xmlhttpRequest): the claude.ai links take
-          // its place, and no retry on every DOM change.
+          // its place, and no retry on every DOM change. Where the companion
+          // has answered before, say it's down, with a retry.
           localLoads.delete(key)
           noLocal.add(key)
           section.remove()
           before.style.display = ""
+          if (e && e.unreachable && companionSeen() && !before.querySelector(".ado-companion-down")) {
+            const down = companionDownNote("this machine's sessions can't be listed")
+            down.style.margin = "4px 0 8px"
+            const retry = h("button", { type: "button", class: `${LOCAL}-more`, onclick: () => {
+              down.remove()
+              noLocal.delete(key)
+              before.style.display = "none"
+              addLocalSection(pane, info, key, before)
+            } }, "Try again")
+            down.append(retry)
+            before.insertBefore(down, before.querySelector(`.${SECTION_CLASS}-body`))
+          }
         }
       )
     }
@@ -3237,7 +3298,20 @@
       }
     }
 
-    const hub = (method, path, body) => localService(method, path, body)
+    // Whether the companion just failed to answer (it's down, not merely erroring).
+    let hubDown = false
+    const hub = (method, path, body) =>
+      localService(method, path, body).then(
+        (json) => {
+          hubDown = false
+          return json
+        },
+        (e) => {
+          if (e.unreachable) hubDown = true
+          throw e
+        }
+      )
+    const showDown = () => hubDown && companionSeen()
     async function idleSeconds() {
       try {
         const { idle } = await hub("GET", "/idle")
@@ -3558,6 +3632,8 @@
       .${CHIP} b { font-weight: 600; font-variant-numeric: tabular-nums; }
       .${CHIP} .ado-rc-dim { color: #605e5c; }
       .${CHIP}.ado-rc-armed { border-color: #0078d4; background: #eff6fc; color: #004578; font-weight: 600; }
+      .${CHIP} .ado-rc-bang { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
+        border-radius: 50%; background: #c27c00; color: #fff; font-size: 11px; font-weight: 700; }
       .${CHIP}.ado-rc-over { border-color: #e0b252; background: #fff4ce; color: #5c3b00; }
       .${CHIP}.ado-rc-ask { border-color: #0078d4; background: #eff6fc; color: #004578; }
       .${CHIP}.ado-rc-paused { background: #f3f2f1; }
@@ -3688,7 +3764,7 @@
       if (s.pr.key !== p.key) return { key: `elsewhere|${s.pr.key}`, build: () => elsewhereView(s, p) }
       if (s.prompt) return { key: `${s.prompt.kind}|${s.prompt.to || ""}`, build: () => promptView(s) }
       if (s.notice === "over") return { key: "over", build: () => overView(s) }
-      return { key: `run|${Spans.running(s.spans)}`, build: () => runView(s) }
+      return { key: `run|${Spans.running(s.spans)}|${showDown()}`, build: () => runView(s) }
     }
     function renderPop(create) {
       if (!pop && !create) return
@@ -3759,7 +3835,9 @@
       try {
         list = await sessionsFor(pr)
       } catch {
-        return box.replaceChildren(el("span", { class: "ado-rc-sub" }, "Your logged time shows here when the local service is running."))
+        return box.replaceChildren(showDown()
+          ? companionDownNote("your logged time can't be shown and new time waits in this browser")
+          : el("span", { class: "ado-rc-sub" }, "Your logged time shows here when the local service is running."))
       }
       if (!list.length) return box.replaceChildren(el("span", { class: "ado-rc-sub" }, "No time logged on this PR yet."))
       const rows = list.flatMap((x) => {
@@ -3838,6 +3916,7 @@
             ? btn("Pause", () => { const x = load(); x.spans = Spans.close(x.spans, Date.now()); save(x) })
             : btn("Resume", () => resume(load(), Date.now())),
           discardBtn()),
+        showDown() && companionDownNote("time away from the Mac isn't noticed and logged time waits in this browser"),
         el("p", { class: "ado-rc-foot" }, "Keeps counting on other tabs and in the terminal. Pauses after 5 minutes with no keyboard or mouse on this Mac."),
       ]
     }
@@ -3975,6 +4054,10 @@
       if (!view) {
         chip?.remove()
         return closePop()
+      }
+      if (showDown()) {
+        view.html += '<span class="ado-rc-bang" aria-hidden="true">!</span>'
+        view.label += " (ado-companion isn't answering)"
       }
       if (!chip || chip.nextElementSibling !== anchor) {
         chip?.remove()
