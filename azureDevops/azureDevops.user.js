@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-16.2
+// @version      2026-11-16.3
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -3267,6 +3267,10 @@
 
     const load = () => read(K.state, null)
     const activeSecs = (s, now = Date.now()) => Math.floor(Spans.total(s.spans, now) / 1000)
+    // What counts against the time box: this run plus everything already logged on
+    // the PR today (earlier runs, other passes), so neither a pause nor a fresh
+    // start the same day resets it.
+    const boxedSecs = (s, now = Date.now()) => (s.todayBefore || 0) + activeSecs(s, now)
     const boxSecs = () => Math.max(1, Number(read(K.box, 30)) || 30) * 60
     const clock = (secs) => {
       const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), sec = secs % 60
@@ -3325,8 +3329,10 @@
         if (load()) return
         const now = Date.now()
         const { pass, join } = passFor(past, now)
-        save({ pr, spans: [[now, null]], prompt: null, notice: null, overShown: false, nextStill: STILL_FIRST_S,
-          lastOnPr: now, lastCheck: now, vote: f ? f.vote : 0, pass, sameDay: join ? join.seconds : 0, firstPass: past[0] || null })
+        const todayBefore = past.filter((x) => dayOf(x.start) === dayOf(now)).reduce((t, x) => t + (x.seconds || 0), 0)
+        save({ pr, spans: [[now, null]], prompt: null, notice: null, overShown: todayBefore >= boxSecs(), nextStill: STILL_FIRST_S,
+          lastOnPr: now, lastCheck: now, vote: f ? f.vote : 0, pass, sameDay: join ? join.seconds : 0, todayBefore,
+          firstPass: past[0] || null })
       } finally {
         starting = false
       }
@@ -3458,7 +3464,7 @@
         if (secs >= s.nextStill || now - s.lastOnPr >= OFF_PR_MS) {
           return pause(s, { kind: "still", at: now, lastOnPr: s.lastOnPr }, now)
         }
-        if (secs >= boxSecs() && !s.overShown) {
+        if (boxedSecs(s, now) >= boxSecs() && !s.overShown) {
           s.overShown = true
           s.notice = "over"
           chime()
@@ -3598,7 +3604,8 @@
         if (!f || f.author) return null
         return { cls: "ado-rc-armed", html: `${ring(0, "", PLAY)}Review clock`, label: "Review clock" }
       }
-      const secs = activeSecs(s)
+      // Today's time on the PR, which is what the box measures.
+      const secs = boxedSecs(s)
       if (s.pr.key !== p.key) {
         return { cls: "ado-rc-elsewhere", html: `${ring(secs / boxSecs(), "#0078d4")}<span class="ado-rc-dim">On !${s.pr.id}</span><b>${clock(secs)}</b>`,
           label: `Review clock is on PR ${s.pr.id}` }
@@ -3684,12 +3691,14 @@
     function tickPop() {
       const s = load()
       if (!pop || !s) return
-      const text = clock(activeSecs(s))
+      const text = clock(boxedSecs(s))
       // Only real changes: rewriting the same text is still a DOM mutation,
       // which reruns every feature, this one included.
       pop.querySelectorAll("[data-rc-clock]").forEach((n) => n.textContent !== text && (n.textContent = text))
+      const run = clock(activeSecs(s))
+      pop.querySelectorAll("[data-rc-run]").forEach((n) => n.textContent !== run && (n.textContent = run))
       const bar = pop.querySelector(".ado-rc-bar > i")
-      const width = `${Math.min(100, (activeSecs(s) / boxSecs()) * 100).toFixed(1)}%`
+      const width = `${Math.min(100, (boxedSecs(s) / boxSecs()) * 100).toFixed(1)}%`
       if (bar && bar.style.width !== width) bar.style.width = width
     }
 
@@ -3771,7 +3780,7 @@
         btn("Turn the clock off", () => setEnabled(false), "ado-rc-link"))
     }
     function passLine(s) {
-      if (s.sameDay) return el("p", null, `Adds to today's ${mins(s.sameDay)} on this PR.`)
+      if (s.todayBefore) return el("p", null, `Includes ${mins(s.todayBefore)} logged earlier today; this run is `, el("span", { "data-rc-run": "" }), " so far.")
       if (s.pass <= 1) return null
       const f = s.firstPass
       return el("p", null, `Pass ${s.pass} on this PR.${f ? ` The 1st was ${mins(f.seconds)} on ${new Date(f.start).toLocaleDateString([], { month: "short", day: "numeric" })}.` : ""}`)
@@ -3798,7 +3807,7 @@
         el("div", { class: "ado-rc-row", style: "justify-content: space-between" }, el("h3", null, `Reviewing !${s.pr.id}`),
           el("span", { class: "ado-rc-sub" }, running ? `since ${at(s.spans[0][0])}` : "paused")),
         el("div", { class: "ado-rc-row", style: "align-items: baseline" }, el("span", { class: "ado-rc-big", "data-rc-clock": "" }),
-          el("span", { class: "ado-rc-sub" }, `of your ${mins(boxSecs())} box`)),
+          el("span", { class: "ado-rc-sub" }, s.todayBefore ? `today, of your ${mins(boxSecs())} box` : `of your ${mins(boxSecs())} box`)),
         el("div", { class: "ado-rc-bar" }, el("i")),
         passLine(s),
         el("div", { class: "ado-rc-row" },

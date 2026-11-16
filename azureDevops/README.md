@@ -339,8 +339,8 @@ On a PR you're a reviewer of (not its author) a chip before the vote button
   It keeps counting while you test the PR in another tab or the terminal.
 - **Still reviewing?** At 60 minutes, then every 30, or after 20 minutes without
   the PR in front of you, it asks, and stays paused until you answer.
-- **Time box:** past 30 minutes (changeable in its popover) the chip turns amber
-  and chimes once.
+- **Time box:** past 30 minutes (changeable in its popover) on the PR that day,
+  earlier runs included, the chip turns amber and chimes once.
 - **Voting** offers to log the time, with your vote as the outcome; you can fix
   the minutes and add a note. **Stop and log** does the same without a vote.
   A PR's logs on one day add up to one pass, unless you tick **Count as a new
