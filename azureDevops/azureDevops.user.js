@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-16.3
+// @version      2026-11-16.4
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -3311,6 +3311,23 @@
     const known = new Map() // PR key → settled facts, for synchronous rendering
     const reading = new Set() // PR keys whose facts are loading (a failed read isn't retried until reload)
     const sessionsFor = (p) => hub("GET", `/review-sessions?repo=${encodeURIComponent(p.repo)}&pr=${p.id}`)
+    // PR key → your total logged seconds on it, for the idle chip (null while
+    // loading or unknown). Refreshed whenever the PR's history is shown, and
+    // dropped on every log.
+    const totals = new Map()
+    function totalFor(p) {
+      if (!totals.has(p.key)) {
+        totals.set(p.key, null)
+        sessionsFor({ repo: p.repoName, id: Number(p.prId) }).then(
+          (list) => {
+            totals.set(p.key, list.reduce((t, x) => t + (x.seconds || 0), 0))
+            render()
+          },
+          () => {}
+        )
+      }
+      return totals.get(p.key)
+    }
 
     // --- state changes ---
     let enabled = false
@@ -3358,6 +3375,7 @@
       pause(s, { kind: "log", outcome: outcome || "" }, Date.now())
     }
     async function postSession(session) {
+      totals.clear()
       try {
         await hub("POST", "/review-sessions", { op: "put", session })
         return true
@@ -3602,7 +3620,9 @@
     function chipView(s, p, f) {
       if (!s) {
         if (!f || f.author) return null
-        return { cls: "ado-rc-armed", html: `${ring(0, "", PLAY)}Review clock`, label: "Review clock" }
+        const total = totalFor(p)
+        return { cls: "ado-rc-armed", html: `${ring(0, "", PLAY)}Review clock${total ? `<span class="ado-rc-dim">· ${mins(total)}</span>` : ""}`,
+          label: total ? `Review clock, ${mins(total)} logged on this PR` : "Review clock" }
       }
       // Today's time on the PR, which is what the box measures.
       const secs = boxedSecs(s)
@@ -3766,6 +3786,8 @@
           el("b", null, mins(x.seconds)), el("span", null, x.outcome || (x.manual ? "Added by hand" : "")), el("span", null, edit, del)]
       })
       const total = list.reduce((t, x) => t + (x.seconds || 0), 0)
+      totals.set(p.key, total)
+      render()
       const heading = `Your time on !${p.prId}: ${mins(total)}${list.length > 1 ? ` in ${list.length} passes` : ""}`
       box.replaceChildren(el("strong", null, heading), el("div", { class: "ado-rc-hist" }, rows))
     }
