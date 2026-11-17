@@ -510,6 +510,12 @@ const askHammerspoon = async (request) => {
 // session on the PR, named "pr <id> <title>", opened in the agents view with the
 // request (led by the PR, its branch and link) sent to it.
 const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/
+// The PR leads the request, except before a slash command, which only runs when it
+// comes first: "/retest-pr" becomes "/retest-pr PR !1 (…)", with any rest after a colon.
+const newSessionPrompt = (pr, ask) => {
+  const slash = /^(\/[A-Za-z0-9:_-]+)(?:\s+(.*))?$/.exec(ask)
+  return slash ? `${slash[1]} ${pr}${slash[2] ? `: ${slash[2]}` : ''}` : `${pr}: ${ask}`
+}
 const startPrSession = async (res, body) => {
   const pr = String(body?.pr ?? '')
   const repo = String(body?.repo ?? '')
@@ -521,7 +527,7 @@ const startPrSession = async (res, body) => {
   const title = oneLine(body?.title, 100)
   const name = `pr ${pr} ${title}`.toLowerCase().trim().slice(0, 80)
   const where = [repo, branch && `branch ${branch}`, ORG && PROJECT && webUrl(repo, pr)].filter(Boolean).join(', ')
-  const prompt = `PR !${pr} (${where}): ${ask}`
+  const prompt = newSessionPrompt(`PR !${pr} (${where})`, ask)
   // The new session should show in the PR's list on the next look.
   for (const key of listCache.keys()) if (key.startsWith(`${pr}|`)) listCache.delete(key)
   const said = await askHammerspoon({ kind: 'start', name, prompt })

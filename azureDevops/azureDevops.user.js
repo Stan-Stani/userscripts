@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-17.1
+// @version      2026-11-17.2
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -2910,13 +2910,16 @@
     // Each opens in your agents view, or takes a request typed here, through
     // POST /pr-sessions/send and Hammerspoon (see README). No service: no section.
     const UPDATE_FROM_MAIN = "Update this PR's branch from main and push it."
-    const REVIEW_PR = "Review this PR."
-    // One-click requests under a session's request box; `pr` is "PR !12309 (CoreAPI)". A slash
-    // command only runs when it leads the prompt, so it takes the PR as its argument instead.
+    // Skills a session runs on the PR (local skills; see README). A slash command only
+    // runs when it leads the prompt, so it takes the PR as its argument.
+    const PR_SKILLS = [
+      { label: "/retest-pr", title: "Re-test the PR: check its review threads were addressed, verify the fixes in the browser, leave the stack running" },
+      { label: "/mechanical-jake", title: "Pre-review the PR for the comments its lead reviewer is likely to leave" },
+    ]
+    // One-click requests under a session's request box; `pr` is "PR !12309 (CoreAPI)".
     const QUICK_REQUESTS = [
       { label: "Update from main", title: UPDATE_FROM_MAIN, request: (pr) => `${pr}: ${UPDATE_FROM_MAIN}` },
-      { label: "/retest-pr", title: "Re-test the PR: check its review threads were addressed, verify the fixes in the browser, leave the stack running",
-        request: (pr) => `/retest-pr ${pr}` },
+      ...PR_SKILLS.map((skill) => ({ ...skill, request: (pr) => `${skill.label} ${pr}` })),
     ]
     const localLoads = new Map() // PR key → Promise of rows
     const noLocal = new Set() // PR keys the local service didn't answer for (until reload)
@@ -2995,7 +2998,7 @@
     }
 
     // "+ New session": a box to start a session on the PR (POST /pr-sessions/start),
-    // with a one-click "Review this PR". `ctx` is { prId, repo, branch, title }.
+    // with one-click PR_SKILLS. `ctx` is { prId, repo, branch, title }.
     function newSession(ctx, refresh) {
       const status = h("span", { class: `${LOCAL}-status`, role: "status" })
       const input = h("input", { type: "text", maxlength: "2000", placeholder: "What should it do?", "aria-label": "Request for a new session on this PR" })
@@ -3025,7 +3028,10 @@
       const composer = h("div", { class: `${LOCAL}-composer`, hidden: true },
         input,
         h("div", { class: `${LOCAL}-actions` },
-          h("button", { type: "button", class: `${LOCAL}-chip`, title: REVIEW_PR, onclick: (e) => start(REVIEW_PR, e.currentTarget) }, "Review this PR"),
+          // The skill alone: ado-companion puts the PR after it (a new session's request
+          // normally starts with the PR).
+          PR_SKILLS.map((skill) => h("button", { type: "button", class: `${LOCAL}-chip`, title: skill.title,
+            onclick: (e) => start(skill.label, e.currentTarget) }, skill.label)),
           h("button", { type: "button", class: `${LOCAL}-send`, onclick: (e) => start(input.value.trim(), e.currentTarget) }, "Start")))
       const toggle = h("button", { type: "button", class: `${LOCAL}-more`, "aria-expanded": "false", onclick: () => {
         composer.hidden = !composer.hidden
