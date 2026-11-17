@@ -34,3 +34,12 @@ failure in one can't break the others:
 
 **→ See [`azureDevops/README.md`](azureDevops/README.md) for install steps,
 screenshots, the full hotkey table, and upgrade notes.**
+
+## Save AI coding quote — `aiCodingQuotes/aiCodingQuotes.user.js`
+
+Personal script: select text in a Reddit, YouTube or Hacker News comment (or on
+any page) and press **Alt+Shift+Q**, or use "Save selected quote" in the
+userscript manager's menu. It reads the comment, the ancestors shown on the
+page and the post or video, and files them into the private `ai-coding-quotes`
+repo through a key-protected endpoint. The key is asked for on first use and
+kept in the manager's storage, never in this repo.
