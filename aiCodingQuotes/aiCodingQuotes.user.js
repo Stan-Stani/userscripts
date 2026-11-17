@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Save AI coding quote
 // @namespace    https://www.seldoncortex.com/quotes
-// @version      0.2.0
+// @version      0.2.1
 // @description  Tap the ❝ button on a Reddit, YouTube or Hacker News comment (or select text anywhere and press Alt+Shift+Q) to file it, with its source and ancestors, into the ai-coding-quotes repo.
 // @match        *://*/*
 // @noframes
@@ -101,8 +101,12 @@ async function extractQuote(target) {
       const href = c.querySelector('#published-time-text a')?.getAttribute('href') || '';
       const id = new URL(href, location.href).searchParams.get('lc');
       const published = c.querySelector('#published-time-text')?.innerText.trim() || '';
+      // YouTube only shows "3 weeks ago" etc.; turn that into an approximate date.
+      const rel = /(\d+)\s*(second|minute|hour|day|week|month|year)s?\s+ago/i.exec(published);
+      const unit = rel && { second: 1e3, minute: 6e4, hour: 36e5, day: 864e5, week: 6048e5, month: 2592e6, year: 31536e6 }[rel[2].toLowerCase()];
+      const created = rel ? new Date(Date.now() - Number(rel[1]) * unit).toISOString().slice(0, 10) : null;
       return {
-        id, author: c.querySelector('#author-text')?.innerText.trim(), created: null,
+        id, author: c.querySelector('#author-text')?.innerText.trim(), created, created_approx: !!created,
         score: num(c.querySelector('#vote-count-middle')?.innerText), parent_id: null,
         url: `https://www.youtube.com/watch?v=${vid}&lc=${id}`, edited: /edited/i.test(published),
         text: c.querySelector('#content-text')?.innerText.trim() || null,
