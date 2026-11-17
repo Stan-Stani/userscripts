@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Save AI coding quote
 // @namespace    https://www.seldoncortex.com/quotes
-// @version      0.2.4
+// @version      0.2.5
 // @description  Tap the ❝ button on a Reddit, YouTube or Hacker News comment (or select text anywhere and press Alt+Shift+Q) to file it, with its source and ancestors, into the ai-coding-quotes repo.
 // @match        *://*/*
 // @noframes
@@ -261,7 +261,6 @@ function addButtons() {
     Object.assign(btn.style, {
       font: 'bold 14px/1 Georgia, serif', padding: '2px 6px', margin: '0 6px', cursor: 'pointer',
       border: '1px solid #8a6d00', borderRadius: '6px', background: '#ffd54f', color: '#1a1a1a', opacity: '0.8',
-      float: site === SITES.reddit ? 'right' : 'none',
     });
     btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
     btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.8'; });
@@ -270,7 +269,7 @@ function addButtons() {
       e.stopPropagation();
       if (confirm(`Save ${site.author(c) || 'this'}'s comment to ai-coding-quotes?`)) saveQuote(btn);
     }, true);
-    slot.prepend(btn);
+    slot.append(btn);
   }
 }
 
