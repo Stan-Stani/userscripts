@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-16.7
+// @version      2026-11-17.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -2772,7 +2772,7 @@
         color: inherit;
         min-width: 0;
       }
-      .${LOCAL}-actions { display: flex; gap: 6px; align-items: center; }
+      .${LOCAL}-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
       .${LOCAL}-chip, .${LOCAL}-send {
         font: inherit;
         font-size: 12px;
@@ -2911,6 +2911,13 @@
     // POST /pr-sessions/send and Hammerspoon (see README). No service: no section.
     const UPDATE_FROM_MAIN = "Update this PR's branch from main and push it."
     const REVIEW_PR = "Review this PR."
+    // One-click requests under a session's request box; `pr` is "PR !12309 (CoreAPI)". A slash
+    // command only runs when it leads the prompt, so it takes the PR as its argument instead.
+    const QUICK_REQUESTS = [
+      { label: "Update from main", title: UPDATE_FROM_MAIN, request: (pr) => `${pr}: ${UPDATE_FROM_MAIN}` },
+      { label: "/retest-pr", title: "Re-test the PR: check its review threads were addressed, verify the fixes in the browser, leave the stack running",
+        request: (pr) => `/retest-pr ${pr}` },
+    ]
     const localLoads = new Map() // PR key → Promise of rows
     const noLocal = new Set() // PR keys the local service didn't answer for (until reload)
 
@@ -2964,12 +2971,12 @@
         input,
         h("div", { class: `${LOCAL}-actions` },
           // One click sends it; disabled while it goes so a double click can't send twice.
-          h("button", { type: "button", class: `${LOCAL}-chip`, title: UPDATE_FROM_MAIN, onclick: async (e) => {
+          QUICK_REQUESTS.map((quick) => h("button", { type: "button", class: `${LOCAL}-chip`, title: quick.title, onclick: async (e) => {
             const chip = e.currentTarget
             chip.disabled = true
-            await sendTo(row, `${pr}: ${UPDATE_FROM_MAIN}`, status)
+            await sendTo(row, quick.request(pr), status)
             chip.disabled = false
-          } }, "Update from main"),
+          } }, quick.label)),
           h("button", { type: "button", class: `${LOCAL}-send`, onclick: send }, "Send")))
       const toggle = h("button", { type: "button", class: `${LOCAL}-ask`, "aria-label": `Send a request to ${row.title}`, title: "Send a request to this session",
         "aria-expanded": "false", onclick: () => {

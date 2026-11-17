@@ -296,8 +296,10 @@ whether the session is working, idle, open in a terminal or stopped.
 
 - Click a session to open it in your `claude agents` view.
 - `>_` opens a box to send it a request: type one and press Enter, or click
-  **Update from main**, which sends that request straight away. The session
-  opens in your agents view with the request typed and sent.
+  **Update from main**, which sends that request straight away. **/retest-pr**
+  sends `/retest-pr PR !<id> (<repo>)` instead, for sessions that have a
+  `retest-pr` skill installed. The session opens in your agents view with the
+  request typed and sent.
 - **+ New session** starts one on the PR: type what it should do, or click
   **Review this PR**. It's named `pr <id> <title>`, gets the PR's link and
   branch, and opens in your agents view.
