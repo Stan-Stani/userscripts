@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Save AI coding quote
 // @namespace    https://www.seldoncortex.com/quotes
-// @version      0.2.2
+// @version      0.2.3
 // @description  Tap the ❝ button on a Reddit, YouTube or Hacker News comment (or select text anywhere and press Alt+Shift+Q) to file it, with its source and ancestors, into the ai-coding-quotes repo.
 // @match        *://*/*
 // @noframes
@@ -112,9 +112,10 @@ async function extractQuote(target) {
         text: c.querySelector('#content-text')?.innerText.trim() || null,
       };
     };
-    const thread = leaf.closest('ytd-comment-thread-renderer');
-    const isReply = !!leaf.closest('ytd-comment-replies-renderer');
-    const top = isReply && thread ? [...thread.querySelectorAll('ytd-comment-view-model, ytd-comment-renderer')].find((x) => !x.closest('ytd-comment-replies-renderer')) : null;
+    // Replies sit in their own nested thread, so go up to the replies list, then to the thread that owns it.
+    const repliesBox = leaf.closest('ytd-comment-replies-renderer');
+    const outer = repliesBox ? repliesBox.closest('ytd-comment-thread-renderer') : null;
+    const top = outer ? [...outer.querySelectorAll('ytd-comment-view-model, ytd-comment-renderer')].find((x) => !x.closest('ytd-comment-replies-renderer')) : null;
     const comments = [];
     if (top && top !== leaf) comments.push({ ...read(top), saved: false });
     const me = { ...read(leaf), saved: true, selection };
