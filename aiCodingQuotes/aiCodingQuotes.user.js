@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Save AI coding quote
 // @namespace    https://www.seldoncortex.com/quotes
-// @version      0.2.1
+// @version      0.2.2
 // @description  Tap the ❝ button on a Reddit, YouTube or Hacker News comment (or select text anywhere and press Alt+Shift+Q) to file it, with its source and ancestors, into the ai-coding-quotes repo.
 // @match        *://*/*
 // @noframes
@@ -114,11 +114,13 @@ async function extractQuote(target) {
     };
     const thread = leaf.closest('ytd-comment-thread-renderer');
     const isReply = !!leaf.closest('ytd-comment-replies-renderer');
-    const top = isReply && thread ? thread.querySelector(':scope > #comment') : null;
+    const top = isReply && thread ? [...thread.querySelectorAll('ytd-comment-view-model, ytd-comment-renderer')].find((x) => !x.closest('ytd-comment-replies-renderer')) : null;
     const comments = [];
     if (top && top !== leaf) comments.push({ ...read(top), saved: false });
     const me = { ...read(leaf), saved: true, selection };
+    // Reply ids are "<parent id>.<reply id>", so the parent is known even if its element isn't found.
     if (comments.length) me.parent_id = comments[0].id;
+    else if (me.id && me.id.includes('.')) me.parent_id = me.id.split('.')[0];
     comments.push(me);
     if (comments.some((c) => !c.id)) return { error: 'could not read the comment id; open the comment via its timestamp link and retry' };
     show(top || leaf);
