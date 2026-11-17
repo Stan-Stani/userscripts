@@ -37,9 +37,9 @@ screenshots, the full hotkey table, and upgrade notes.**
 
 ## Save AI coding quote — `aiCodingQuotes/aiCodingQuotes.user.js`
 
-Personal script: select text in a Reddit, YouTube or Hacker News comment (or on
-any page) and press **Alt+Shift+Q**, or use "Save selected quote" in the
-userscript manager's menu. It reads the comment, the ancestors shown on the
+Personal script: tap the **❝** button on any Reddit, YouTube or Hacker News
+comment and confirm, or select text anywhere and press **Alt+Shift+Q** (also
+"Save selected quote" in the userscript manager's menu). It reads the comment, the ancestors shown on the
 page and the post or video, and files them into the private `ai-coding-quotes`
 repo through a key-protected endpoint. The key is asked for on first use and
 kept in the manager's storage, never in this repo.

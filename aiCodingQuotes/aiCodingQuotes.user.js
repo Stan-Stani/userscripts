@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Save AI coding quote
 // @namespace    https://www.seldoncortex.com/quotes
-// @version      0.1.0
-// @description  Select text in a Reddit, YouTube or Hacker News comment (or any page) and press Alt+Shift+Q to file it, with its source and ancestors, into the ai-coding-quotes repo.
+// @version      0.2.0
+// @description  Tap the ❝ button on a Reddit, YouTube or Hacker News comment (or select text anywhere and press Alt+Shift+Q) to file it, with its source and ancestors, into the ai-coding-quotes repo.
 // @match        *://*/*
 // @noframes
 // @grant        GM_xmlhttpRequest
@@ -17,13 +17,18 @@
 
 const ENDPOINT = 'https://www.seldoncortex.com/quotes/api/quotes';
 
-async function extractQuote() {
-  const sel = window.getSelection();
-  const selection = sel ? sel.toString().trim() : '';
-  if (!selection) return { error: 'no text selected' };
-  let node = sel.anchorNode;
-  if (node && node.nodeType !== 1) node = node.parentElement;
-  if (!node) return { error: 'no selection anchor' };
+// target: an element inside the comment to save (the ❝ button). Without it, the current text selection is used.
+async function extractQuote(target) {
+  let selection = '';
+  let node = target || null;
+  if (!node) {
+    const sel = window.getSelection();
+    selection = sel ? sel.toString().trim() : '';
+    if (!selection) return { error: 'no text selected' };
+    node = sel.anchorNode;
+    if (node && node.nodeType !== 1) node = node.parentElement;
+    if (!node) return { error: 'no selection anchor' };
+  }
 
   const host = location.hostname;
   const abs = (href) => new URL(href, location.href).toString();
@@ -182,11 +187,11 @@ function setKey() {
   if (key != null && key.trim()) { GM_setValue('token', key.trim()); toast('Key saved', true); }
 }
 
-async function saveQuote() {
+async function saveQuote(target) {
   const token = GM_getValue('token', '');
   if (!token) { setKey(); if (!GM_getValue('token', '')) return; }
   let payload;
-  try { payload = await extractQuote(); } catch (e) { payload = { error: e.message }; }
+  try { payload = await extractQuote(target); } catch (e) { payload = { error: e.message }; }
   if (!payload || payload.error) return toast(`Not saved: ${payload?.error || 'could not read the selection'}`, false);
   toast('Saving quote…');
   GM_xmlhttpRequest({
@@ -205,8 +210,70 @@ async function saveQuote() {
   });
 }
 
-GM_registerMenuCommand('Save selected quote (Alt+Shift+Q)', saveQuote);
+GM_registerMenuCommand('Save selected quote (Alt+Shift+Q)', () => saveQuote());
 GM_registerMenuCommand('Set endpoint key', setKey);
 document.addEventListener('keydown', (e) => {
   if (e.altKey && e.shiftKey && e.code === 'KeyQ') { e.preventDefault(); saveQuote(); }
 }, true);
+
+// ---------- One-tap ❝ buttons on comments ----------
+// Each site: which elements are comments, where the button goes, and how to name the author.
+const SITES = {
+  reddit: {
+    test: /(^|\.)reddit\.com$/,
+    comments: 'shreddit-comment',
+    // the comment body's own container (light DOM, so the button renders)
+    slot: (c) => c.querySelector(`#${c.getAttribute('thingid')}-comment-rtjson-content`)?.parentElement,
+    author: (c) => c.getAttribute('author'),
+  },
+  youtube: {
+    test: /(^|\.)youtube\.com$/,
+    comments: 'ytd-comment-view-model, ytd-comment-renderer',
+    slot: (c) => c.querySelector('#header-author'),
+    author: (c) => c.querySelector('#author-text')?.innerText.trim(),
+  },
+  hackernews: {
+    test: /^news\.ycombinator\.com$/,
+    comments: 'tr.athing',
+    slot: (c) => (c.querySelector('.commtext') ? c.querySelector('.comhead') : null),
+    author: (c) => c.querySelector('.hnuser')?.innerText,
+  },
+};
+const site = Object.values(SITES).find((s) => s.test.test(location.hostname));
+
+function addButtons() {
+  for (const c of document.querySelectorAll(site.comments)) {
+    if (c.dataset.aiQuoteBtn) continue;
+    const slot = site.slot(c);
+    if (!slot) continue; // body not rendered yet (or a deleted comment); retried on the next change
+    c.dataset.aiQuoteBtn = '1';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '❝';
+    btn.title = 'Save this comment to ai-coding-quotes';
+    Object.assign(btn.style, {
+      font: 'bold 14px/1 Georgia, serif', padding: '2px 6px', margin: '0 6px', cursor: 'pointer',
+      border: '1px solid currentColor', borderRadius: '6px', background: 'transparent', color: 'inherit', opacity: '0.6',
+      float: site === SITES.reddit ? 'right' : 'none',
+    });
+    btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
+    btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.6'; });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (confirm(`Save ${site.author(c) || 'this'}'s comment to ai-coding-quotes?`)) saveQuote(btn);
+    }, true);
+    slot.prepend(btn);
+  }
+}
+
+if (site) {
+  let queued = false;
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; addButtons(); });
+  };
+  new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
+  schedule();
+}
