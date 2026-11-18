@@ -78,6 +78,42 @@ live_state() {
     2>/dev/null || true
 }
 
+# A background job that restarts (after a reboot, say) carries on in a new
+# transcript under the same name and job id; the old one stays. The new transcript
+# starts with copies of the old one's messages, each still carrying the old
+# "session_id", which is how a continuation is told apart from a fork (a fork gets
+# a new name).
+continues() { # <transcript> <older session id>: does the transcript carry that session on?
+  # head stops early when grep -q does: under pipefail its SIGPIPE would read as "no".
+  { head -c 4000000 "$1" 2>/dev/null || true; } | grep -qF "\"session_id\":\"$2\""
+}
+# "<config dir>\t<job id>\t<session id>\t<name>" for each live background job; one
+# `claude agents` call per profile.
+jobs_of() {
+  local cfg
+  for cfg in "$@"; do
+    ( use_config "$cfg"; claude agents --json 2>/dev/null |
+        jq -r --arg cfg "$cfg" '.[] | select(.kind == "background") | "\($cfg)\t\(.id)\t\(.sessionId)\t\(.name // "")"' 2>/dev/null ) || true
+  done
+}
+# The session a live job runs now, when that job carries on this transcript's session:
+# a job whose id is the session's first block, or a job of the same name whose
+# transcript continues it. Prints nothing otherwise.
+current_of() { # <transcript> <jobs_of output>
+  local id cfg title job_id job_sid
+  id=$(basename "$1" .jsonl)
+  cfg=$(config_of "$1")
+  title=$(title_of "$1")
+  while IFS=$'\t' read -r c job_id job_sid name; do
+    [ "$c" = "$cfg" ] && [ -n "$job_sid" ] && [ "$job_sid" != "$id" ] || continue
+    if [ "$job_id" = "${id%%-*}" ] || { [ -n "$title" ] && [ "$name" = "$title" ] &&
+         [ -f "$(dirname "$1")/$job_sid.jsonl" ] && continues "$(dirname "$1")/$job_sid.jsonl" "$id"; }; then
+      printf '%s\n' "$job_sid"
+      return
+    fi
+  done <<< "$2"
+}
+
 bg=""
 no_attach=""
 mode=pick
@@ -184,7 +220,9 @@ else
   [ -z "$branch" ] || re="$re|${branch//./\\.}"
   exclude=${CC_PR_EXCLUDE_TITLE-^(Teams: |claude bridge)}
 
-  # transcript, title, cwd, mtime, live — newest first
+  jobs=$(jobs_of $(for d in "${roots[@]}"; do dirname "$d"; done | sort -u))
+
+  # transcript, title, cwd, mtime, live — newest first, one row per session
   rows=$(
     rg -l -i --no-messages -g '*.jsonl' -g '!subagents' -e "$re" "${roots[@]}" | while read -r f; do
       # Only Claude's text and tool calls, and prompts the user typed.
@@ -196,6 +234,9 @@ else
             ((.message.content | if type == "string" then . else [.[]? | select(.type == "text") | .text] | join(" ") end) | test($re; "i")))
         ) | 1' 2>/dev/null || true; } | wc -l | tr -d ' ')
       [ "$hits" -gt 0 ] || continue
+      # A transcript its job has moved on from stands for the job's current one.
+      cur=$(current_of "$f" "$jobs")
+      [ -z "$cur" ] || [ ! -f "$(dirname "$f")/$cur.jsonl" ] || f="$(dirname "$f")/$cur.jsonl"
       title=$(title_of "$f")
       if [ -n "$exclude" ] && printf '%s' "$title" | grep -Eiq -- "$exclude"; then continue; fi
       use_config "$(config_of "$f")"
@@ -204,8 +245,20 @@ else
       live=""
       [ "${CC_PR_LIVE-1}" = 0 ] || live=$(live_state "$(basename "$f" .jsonl)")
       printf '%s\t%s\t%s\t%s\t%s\n' "$f" "$title" "$(cwd_of "$f")" "$(stat -f %m "$f")" "${live%% *}"
-    done | sort -t$'\t' -k4,4rn
+    done | awk -F'\t' '!seen[$1]++' | sort -t$'\t' -k4,4rn
   ) || true
+  # Of a stopped job's chain of transcripts, list only the newest: drop a row when a
+  # row of the same name carries its session on.
+  if [ -n "$rows" ]; then
+    rows=$(printf '%s\n' "$rows" | while IFS=$'\t' read -r f title rest; do
+      id=$(basename "$f" .jsonl)
+      if [ -n "$title" ] && printf '%s\n' "$rows" | awk -F'\t' -v t="$title" -v f="$f" '$2 == t && $1 != f { print $1 }' |
+           while read -r other; do continues "$other" "$id" && echo yes && break; done | grep -q yes; then
+        continue
+      fi
+      printf '%s\t%s\t%s\n' "$f" "$title" "$rest"
+    done)
+  fi
 
   if [ "$mode" = list ]; then
     [ -z "$rows" ] || printf '%s\n' "$rows"
@@ -228,6 +281,14 @@ else
       --preview="$0 --preview {1}" --preview-window=down,40%,wrap) || exit 130
     pick=${pick%%$'\t'*}
   fi
+fi
+
+# Opening a transcript its job has moved on from opens the job's current session
+# instead: resuming the old one would add a second session under the same name.
+cur=$(current_of "$pick" "$(jobs_of "$(config_of "$pick")")")
+if [ -n "$cur" ] && [ -f "$(dirname "$pick")/$cur.jsonl" ]; then
+  echo "cc-pr: that transcript's job runs a newer session now; opening that" >&2
+  pick="$(dirname "$pick")/$cur.jsonl"
 fi
 
 sid=$(basename "$pick" .jsonl)
