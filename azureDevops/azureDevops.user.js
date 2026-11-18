@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Azure DevOps Toolbox
 // @namespace    https://www.seldoncortex.com/
-// @version      2026-11-17.2
+// @version      2026-11-18.1
 // @description  All-in-one Azure DevOps helpers: PR dashboard filters and new-comment previews, file-path copy buttons, branch-name copy buttons, PR and work item keyboard shortcuts, open-PR-in-VS-Code, a work item modal on PR pages, a work-on-in-Claude launcher button, the Claude sessions behind a PR, a send-to-Claude-Code button on PR comment threads, and an opt-in PR review clock.
 // @author       Stan Stanislaus
 // @match        https://dev.azure.com/*
@@ -3378,6 +3378,48 @@
         }
       )
     const showDown = () => hubDown && companionSeen()
+
+    // --- the focus timer: ado-companion's /focus, shown in the menu bar by its
+    // Hammerspoon focus.lua. A block ending (break due) or a break pauses the review
+    // clock, and the next focus block resumes it. A companion without /focus: none
+    // of this shows. ---
+    let focusNow = null // the last GET /focus answer
+    let focusAt = 0
+    const setFocus = (f) => {
+      focusNow = f
+      focusAt = Date.now()
+      return f
+    }
+    const readFocus = () => hub("GET", "/focus").then(setFocus, () => null)
+    const focusLeft = (f) => (f.running ? Math.max(0, f.remaining - (Date.now() - focusAt)) : f.remaining)
+    // Acts only on a change of phase, so resuming by hand during a break sticks.
+    // True when it changed `s`.
+    function followFocus(s, f, now) {
+      if (s.focusPhaseId === f.phaseId) return false
+      const first = s.focusPhaseId == null
+      s.focusPhaseId = f.phaseId
+      if (first) return true
+      if ((f.phase === "due" || f.phase === "break") && Spans.running(s.spans) && !s.prompt) {
+        // From when the block ended, not when this tab noticed.
+        s.spans = Spans.close(s.spans, Math.min(now, f.phaseId))
+        s.focusPaused = true
+      } else if (f.phase === "focus" && f.running && s.focusPaused) {
+        s.focusPaused = false
+        if (!s.prompt) {
+          s.spans = Spans.open(s.spans, now)
+          s.lastCheck = now
+          s.lastOnPr = now
+        }
+      }
+      return true
+    }
+    async function focusAction(body) {
+      const f = setFocus(await hub("POST", "/focus", body))
+      const s = load()
+      if (s && followFocus(s, f, Date.now())) save(s)
+      else render()
+    }
+
     async function idleSeconds() {
       try {
         const { idle } = await hub("GET", "/idle")
@@ -3507,6 +3549,7 @@
     function resume(s, from) {
       s.spans = Spans.open(s.spans, from)
       s.prompt = null
+      s.focusPaused = false
       s.lastCheck = Date.now()
       s.lastOnPr = Date.now()
       save(s)
@@ -3592,10 +3635,17 @@
           const p = { prefix: first.pr.prefix, repo: encodeURIComponent(first.pr.repo), prId: String(first.pr.id), key: first.pr.key }
           vote = await prFacts(p, true).then((f) => f.vote, () => null)
         }
+        const focus = await readFocus()
         const s = load()
         if (!s || s.pr.key !== first.pr.key) return
         const now = Date.now()
         if (onIt) s.lastOnPr = now
+        if (focus) {
+          if (followFocus(s, focus, now)) save(s)
+          // Which PR a focus block was spent on; the companion forgets it a minute after the last report.
+          hub("POST", "/focus", { action: "review", pr: s.pr.id, repo: s.pr.repo, title: s.pr.title,
+            seconds: activeSecs(s, now), running: Spans.running(s.spans) }).catch(() => {})
+        }
         if (!Spans.running(s.spans)) {
           if (s.prompt?.kind === "idle" && !s.prompt.to && idle != null && idle < 60) {
             s.prompt.to = now - idle * 1000
@@ -3778,14 +3828,18 @@
         const word = s.prompt.kind === "log" ? "log time?" : s.prompt.kind === "still" ? "still there?" : "away"
         return { cls: "ado-rc-ask", html: `${ring(secs / boxSecs(), "#0078d4", PAUSE)}<b>${clock(secs)}</b><span>${word}</span>`, label: `Review clock paused: ${word}` }
       }
+      const fo = focusNow
       if (!Spans.running(s.spans)) {
-        return { cls: "ado-rc-paused", html: `${ring(secs / boxSecs(), "#8a8886", PAUSE)}<b>${clock(secs)}</b><span class="ado-rc-dim">paused</span>`, label: "Review clock paused" }
+        const why = s.focusPaused && fo && (fo.phase === "due" ? "break due" : fo.phase === "break" ? `break ${clock(Math.ceil(focusLeft(fo) / 1000))}` : "paused, break over")
+        return { cls: "ado-rc-paused", html: `${ring(secs / boxSecs(), "#8a8886", PAUSE)}<b>${clock(secs)}</b><span class="ado-rc-dim">${why || "paused"}</span>`,
+          label: why ? "Review clock paused for your break" : "Review clock paused" }
       }
+      const block = fo && fo.phase === "focus" ? `<span class="ado-rc-dim">· focus ${clock(Math.ceil(focusLeft(fo) / 1000))}</span>` : ""
       const over = secs - boxSecs()
       if (over > 0) {
-        return { cls: "ado-rc-over", html: `${ring(1, "#c27c00")}<b>${clock(secs)}</b><span>+${mins(over)}</span>`, label: `Review clock, ${mins(over)} over the box` }
+        return { cls: "ado-rc-over", html: `${ring(1, "#c27c00")}<b>${clock(secs)}</b><span>+${mins(over)}</span>${block}`, label: `Review clock, ${mins(over)} over the box` }
       }
-      return { cls: "", html: `${ring(secs / boxSecs(), "#0078d4")}<b>${clock(secs)}</b><span class="ado-rc-dim">/ ${mins(boxSecs())}</span>`,
+      return { cls: "", html: `${ring(secs / boxSecs(), "#0078d4")}<b>${clock(secs)}</b><span class="ado-rc-dim">/ ${mins(boxSecs())}</span>${block}`,
         label: `Review clock, ${clock(secs)} of ${mins(boxSecs())}` }
     }
 
@@ -3832,7 +3886,9 @@
       if (s.pr.key !== p.key) return { key: `elsewhere|${s.pr.key}`, build: () => elsewhereView(s, p) }
       if (s.prompt) return { key: `${s.prompt.kind}|${s.prompt.to || ""}`, build: () => promptView(s) }
       if (s.notice === "over") return { key: "over", build: () => overView(s) }
-      return { key: `run|${Spans.running(s.spans)}|${showDown()}`, build: () => runView(s) }
+      const fo = focusNow
+      const focusKey = fo ? `${fo.phaseId}|${fo.running}|${Math.ceil(focusLeft(fo) / 60000)}` : ""
+      return { key: `run|${Spans.running(s.spans)}|${showDown()}|${focusKey}`, build: () => runView(s) }
     }
     function renderPop(create) {
       if (!pop && !create) return
@@ -3978,6 +4034,7 @@
           el("span", { class: "ado-rc-sub" }, s.todayBefore ? `today, of your ${mins(boxSecs())} box` : `of your ${mins(boxSecs())} box`)),
         el("div", { class: "ado-rc-bar" }, el("i")),
         passLine(s),
+        focusRow(),
         el("div", { class: "ado-rc-row" },
           btn("Stop and log", () => stopAndLog(load()), "ado-rc-primary"),
           running
@@ -3987,6 +4044,34 @@
         showDown() && companionDownNote("time away from the Mac isn't noticed and logged time waits in this browser"),
         el("p", { class: "ado-rc-foot" }, "Keeps counting on other tabs and in the terminal. Pauses after 5 minutes with no keyboard or mouse on this Mac."),
       ]
+    }
+    // The focus timer's phase and its next step, under the running clock.
+    function focusRow() {
+      const f = focusNow
+      if (!f) return null
+      const left = Math.ceil(focusLeft(f) / 60000)
+      const say = {
+        focus: `Focus: ${left} min left in block ${f.block} of ${f.longEvery}.`,
+        due: `Break due: ${f.breakMin} min. The review clock waits for you.`,
+        break: `On a break: ${left} min left. The review clock waits for you.`,
+        ready: "No focus block running.",
+      }[f.phase] || ""
+      const bank = f.bank >= 60000 ? ` Bank: ${mins(f.bank / 1000)}.` : ""
+      const act = (label, body) => {
+        const b = btn(label, () => {
+          b.disabled = true
+          focusAction(body).catch((e) => {
+            b.disabled = false
+            b.textContent = `Couldn't: ${e.message}`
+          })
+        })
+        return b
+      }
+      const actions = f.phase === "ready" ? [act("Start focus", { action: "start" })]
+        : f.phase === "due" ? [act(`Take ${f.breakMin} min break`, { action: "take" }), act(`Skip, bank ${f.breakMin} min`, { action: "skip" })]
+          : f.phase === "break" ? [act("End break", { action: "endBreak" })] : []
+      return el("div", { class: "ado-rc-col" }, el("span", { class: "ado-rc-sub" }, say + bank),
+        actions.length > 0 && el("div", { class: "ado-rc-row" }, actions))
     }
     function overView(s) {
       const dismiss = () => { const x = load(); x.notice = null; save(x); closePop() }

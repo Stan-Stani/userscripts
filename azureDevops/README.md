@@ -354,6 +354,12 @@ On a PR you're a reviewer of (not its author) a chip before the vote button
 On **My pull requests**, each PR you've logged time on shows it ("57m reviewed"),
 and the one the clock is on shows its time today.
 
+With the companion's focus timer running (see [local/](local/)), the chip also
+shows the time left in your focus block. A block ending pauses the clock
+("break due", then the break's countdown) and the next focus block resumes it;
+resume by hand any time. The popover offers the timer's next step: start a
+block, take or skip the break, or end it.
+
 The clock is shared by every ADO tab, so one runs at a time; opening another PR
 you review offers to move it there. The chip shows your total on the PR, and its popover lists the logged
 time, with Edit, Delete and **Add time** for a review you forgot to time.
@@ -366,6 +372,8 @@ Sessions*, reached through `GM_xmlhttpRequest`):
 - `POST /review-sessions` with `{ "op": "put", "session": {…} }` or
   `{ "op": "delete", "id": "…" }`, as JSON with an `X-ADO-Toolbox: 1` header
   (which a web page can't send without a CORS preflight the service never answers)
+- `GET /focus` and `POST /focus` (optional): the focus timer, and reports of the
+  PR being timed
 
 Without it the clock still runs but can't tell when you're away, and logged
 reviews wait in the browser until the service answers.
