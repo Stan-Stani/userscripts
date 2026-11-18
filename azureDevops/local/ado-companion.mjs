@@ -46,6 +46,13 @@
  * The POST (same JSON + header rule) hands the session, and the request typed on
  * the PR page, to Hammerspoon's ccpr.request, which opens it in an agents view
  * and types the request there.
+ *
+ * And the focus timer (focus.mjs), shown in the menu bar by Hammerspoon's focus.lua
+ * and beside the review clock:
+ *   GET  /focus  → the timer now, plus today's totals
+ *   POST /focus  {"action": "start"|"pause"|"resume"|"breakNow"|"take"[, "add": <min>]|"skip"
+ *                 |"snooze"|"endBreak"|"stop"|"settings"|"review", …}  (same JSON + header rule)
+ * State is FOCUS_STATE; finished blocks, breaks and bank changes go to FOCUS_LOG.
  */
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -54,6 +61,7 @@ import { createServer } from 'node:http'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { act as focusAct, advance as focusAdvance, applyIdle, initial as focusInitial, today as focusTotals, view as focusView } from './focus.mjs'
 
 const PORT = 47811
 const CONFIG_FILE = process.env.ADO_COMPANION_CONFIG || join(homedir(), '.config/ado-companion/config.json')
@@ -343,6 +351,93 @@ const handleReviews = async (req, res, url) => {
   return sendJson(res, 200, { ok: true, session: event.session })
 }
 
+// --- the focus timer ---
+const FOCUS_DIR = join(homedir(), '.local/share/focus')
+const FOCUS_STATE = join(FOCUS_DIR, 'state.json')
+const FOCUS_LOG = join(FOCUS_DIR, 'events.jsonl')
+let focus = null
+const loadFocus = () => {
+  if (!focus) {
+    try {
+      focus = JSON.parse(readFileSync(FOCUS_STATE, 'utf8'))
+    } catch {
+      focus = focusInitial(Date.now())
+    }
+  }
+  return focus
+}
+let todayCache = { at: 0, totals: null }
+const saveFocus = (events) => {
+  mkdirSync(FOCUS_DIR, { recursive: true })
+  if (events.length) {
+    appendFileSync(FOCUS_LOG, events.map((e) => JSON.stringify(e) + '\n').join(''))
+    todayCache = { at: 0, totals: null }
+  }
+  writeFileSync(FOCUS_STATE, JSON.stringify(focus))
+}
+// The menu bar asks every second, so the logs are read at most every 15 s.
+const focusToday = (now) => {
+  if (todayCache.totals && now - todayCache.at < 15000) return todayCache.totals
+  let events = []
+  try {
+    events = readFileSync(FOCUS_LOG, 'utf8').split('\n').filter(Boolean).flatMap((line) => {
+      try {
+        return [JSON.parse(line)]
+      } catch {
+        return []
+      }
+    })
+  } catch {
+    /* nothing logged yet */
+  }
+  const day = new Date(now).toDateString()
+  const totals = {
+    ...focusTotals(events, now),
+    prSeconds: reviewSessions().filter((x) => new Date(x.start).toDateString() === day).reduce((t, x) => t + (x.seconds || 0), 0),
+  }
+  todayCache = { at: now, totals }
+  return totals
+}
+const focusAnswer = (now) => ({ ...focusView(loadFocus(), now), today: focusToday(now) })
+// Phases end on time with nobody asking, and time away pauses a focus block.
+const tickFocus = async () => {
+  const s = loadFocus()
+  const now = Date.now()
+  let idled = false
+  if (s.phase === 'focus') {
+    try {
+      idled = applyIdle(s, now, await idleSeconds())
+    } catch {
+      /* no idle reading this time */
+    }
+  }
+  const events = focusAdvance(s, now)
+  if (idled || events.length) saveFocus(events)
+}
+setInterval(() => tickFocus().catch((e) => process.stderr.write(`focus tick: ${e.message}\n`)), 5000)
+
+const handleFocus = async (req, res) => {
+  const now = Date.now()
+  if (req.method === 'GET') {
+    const events = focusAdvance(loadFocus(), now)
+    if (events.length) saveFocus(events)
+    return sendJson(res, 200, focusAnswer(now))
+  }
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST' })
+  if (req.headers['x-ado-toolbox'] !== '1' || !String(req.headers['content-type']).startsWith('application/json')) {
+    return sendJson(res, 403, { error: 'JSON with X-ADO-Toolbox: 1 only' })
+  }
+  let body
+  try {
+    body = JSON.parse(await readBody(req))
+  } catch {
+    return sendJson(res, 400, { error: 'bad JSON' })
+  }
+  const out = focusAct(loadFocus(), body, now)
+  saveFocus(out.events)
+  return out.error ? sendJson(res, 409, { error: out.error, ...focusAnswer(now) }) : sendJson(res, 200, focusAnswer(now))
+}
+
 // --- a PR's local Claude Code sessions ---
 const CC_PR = join(homedir(), '.local/bin/cc-pr')
 const HS = '/opt/homebrew/bin/hs'
@@ -557,6 +652,13 @@ createServer(async (req, res) => {
       return sendJson(res, 500, { error: e.message })
     }
   }
+  if (url.pathname === '/focus') {
+    try {
+      return await handleFocus(req, res)
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message })
+    }
+  }
   if (url.pathname === '/review-sessions') {
     try {
       return await handleReviews(req, res, url)
@@ -584,7 +686,7 @@ createServer(async (req, res) => {
   const match = /^\/pr\/(\d{1,9})$/.exec(url.pathname)
   if (!match) {
     res.writeHead(404, { 'Content-Type': 'text/plain' })
-    res.end('routes: /pr/<id>, /claude-sessions, /pr-sessions, /idle, /review-sessions (see README)\n')
+    res.end('routes: /pr/<id>, /claude-sessions, /pr-sessions, /idle, /review-sessions, /focus (see README)\n')
     return
   }
 

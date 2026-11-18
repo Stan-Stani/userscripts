@@ -3,9 +3,9 @@
 #
 #   azureDevops/local/install.sh [--with-review-sync]
 #
-# Links ado-companion, pr-review-sync and cc-pr into ~/.local/bin, and ccpr.lua into
-# ~/.hammerspoon when Hammerspoon is installed (an existing ccpr.lua is kept as
-# ccpr.lua.bak-<date>). Writes the launchd agent that keeps ado-companion running,
+# Links ado-companion, pr-review-sync and cc-pr into ~/.local/bin, and ccpr.lua and
+# focus.lua into ~/.hammerspoon when Hammerspoon is installed (an existing one is
+# kept as <name>.bak-<date>). Writes the launchd agent that keeps ado-companion running,
 # plus the review-time sync (at login, then every 2 hours) with --with-review-sync,
 # and (re)starts them.
 # Writes ~/.config/ado-companion/config.json with empty settings if it's missing.
@@ -43,11 +43,13 @@ ln -sfn "$here/pr-review-sync" "$bin/pr-review-sync"
 ln -sfn "$(cd "$here/.." && pwd)/cc-pr" "$bin/cc-pr"
 
 if [ -d "$HOME/.hammerspoon" ]; then
-  target=$HOME/.hammerspoon/ccpr.lua
-  if [ -e "$target" ] && [ "$(readlink "$target" || true)" != "$here/ccpr.lua" ]; then
-    mv "$target" "$target.bak-$(date +%Y%m%d%H%M%S)"
-  fi
-  ln -sfn "$here/ccpr.lua" "$target"
+  for lua in ccpr.lua focus.lua; do
+    target=$HOME/.hammerspoon/$lua
+    if [ -e "$target" ] && [ "$(readlink "$target" || true)" != "$here/$lua" ]; then
+      mv "$target" "$target.bak-$(date +%Y%m%d%H%M%S)"
+    fi
+    ln -sfn "$here/$lua" "$target"
+  done
 fi
 
 if [ ! -e "$config" ]; then
@@ -90,6 +92,7 @@ agent com.ado-companion
 
 cat <<'EOF'
 Next:
-  - Hammerspoon: in ~/.hammerspoon/init.lua, require("ccpr").setup{} (settings in ccpr.lua's header), then reload.
+  - Hammerspoon: in ~/.hammerspoon/init.lua, require("ccpr").setup{} (settings in ccpr.lua's header)
+    and require("focus").setup() for the focus timer in the menu bar, then reload.
   - Check: curl -s http://127.0.0.1:47811/idle
 EOF
