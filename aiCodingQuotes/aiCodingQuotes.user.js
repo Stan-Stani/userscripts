@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Save AI coding quote
 // @namespace    https://www.seldoncortex.com/quotes
-// @version      0.2.5
+// @version      0.2.6
 // @description  Tap the ❝ button on a Reddit, YouTube or Hacker News comment (or select text anywhere and press Alt+Shift+Q) to file it, with its source and ancestors, into the ai-coding-quotes repo.
 // @match        *://*/*
 // @noframes
@@ -16,6 +16,9 @@
 'use strict';
 
 const ENDPOINT = 'https://www.seldoncortex.com/quotes/api/quotes';
+// A Hacker News comment's author link. On a comment's own page (item?id=<comment>) HN
+// drops the hnuser class from it, so match the user link too.
+const HN_USER = '.hnuser, .comhead a[href^="user?id="]';
 
 // target: an element inside the comment to save (the ❝ button). Without it, the current text selection is used.
 async function extractQuote(target) {
@@ -139,7 +142,7 @@ async function extractQuote(target) {
     const source = {
       site: 'hackernews', id: storyId, url: `https://news.ycombinator.com/item?id=${storyId}`,
       title: onStory ? onStory.innerText.trim() : titleLink?.innerText.trim() || document.title,
-      author: onStory ? null : document.querySelector('.fatitem .subline .hnuser, .fatitem .subtext .hnuser')?.innerText || null,
+      author: onStory ? null : document.querySelector('.fatitem .subline .hnuser, .fatitem .subtext .hnuser, .fatitem .subline a[href^="user?id="]')?.innerText || null,
     };
     if (titleLink && !onStory && !titleLink.href.startsWith('https://news.ycombinator.com/')) source.link = titleLink.href;
     const read = (r) => {
@@ -147,12 +150,14 @@ async function extractQuote(target) {
       const epoch = Number(age.split(' ')[1]);
       const parentLink = [...r.querySelectorAll('.navs a, .comhead a')].find((a) => a.innerText.trim() === 'parent');
       const pid = parentLink ? new URL(parentLink.href).searchParams.get('id') : null;
+      const text = r.querySelector('.commtext')?.innerText.trim() || null;
       return {
-        id: r.id, author: r.querySelector('.hnuser')?.innerText || '[deleted]',
+        // No author link and no text: a deleted comment. Text but no author: unknown, not deleted.
+        id: r.id, author: r.querySelector(HN_USER)?.innerText || (text ? null : '[deleted]'),
         created: Number.isFinite(epoch) ? new Date(epoch * 1000).toISOString().replace(/\.\d+Z$/, 'Z') : age.split(' ')[0] || null,
         score: null, parent_id: pid && pid !== storyId ? pid : null,
         url: `https://news.ycombinator.com/item?id=${r.id}`,
-        text: r.querySelector('.commtext')?.innerText.trim() || null,
+        text,
       };
     };
     // Rendered ancestors: walk back up the flat comment table by indent.
@@ -243,7 +248,7 @@ const SITES = {
     test: /^news\.ycombinator\.com$/,
     comments: 'tr.athing',
     slot: (c) => (c.querySelector('.commtext') ? c.querySelector('.comhead') : null),
-    author: (c) => c.querySelector('.hnuser')?.innerText,
+    author: (c) => c.querySelector(HN_USER)?.innerText,
   },
 };
 const site = Object.values(SITES).find((s) => s.test.test(location.hostname));
